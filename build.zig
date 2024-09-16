@@ -64,8 +64,8 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
 
-    const waf = b.addWriteFile();
-    waf.addCopyFile(exe.getEmittedAsm(), "main.asm");
+    const waf = b.addWriteFiles();
+    _ = waf.addCopyFile(exe.getEmittedAsm(), "main.asm");
     waf.step.dependOn(&exe.step);
     b.getInstallStep().dependOn(&waf.step);
 
