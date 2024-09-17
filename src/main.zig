@@ -4,35 +4,36 @@ const Allocator = std.mem.Allocator;
 const time = std.time;
 const Timer = time.Timer;
 const Random = std.Random;
+const comptimePrint = std.fmt.comptimePrint;
 
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     //try stdout.print("test");
     @setEvalBranchQuota(10000000);
-    const alg = Algebra(3,0,1, f64);
+    const alg = Algebra(3, 0, 1, f64);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const allocator = arena.allocator();
     defer _ = arena.deinit();
-    const table_format: [] const alg.RowFormat = &.{alg.RowFormat{}};//, alg.RowFormat{.blade_fmt = .binary_no_e, .nonzero_scalars_as_blade = true}};
+    const table_format: []const alg.RowFormat = &.{alg.RowFormat{}}; //, alg.RowFormat{.blade_fmt = .binary_no_e, .nonzero_scalars_as_blade = true}};
     const ptr = try alg.get_cayley_table(allocator, &alg.gp_cayley, table_format);
-    try stdout.print("Algebra Signature: ({},{},{}):\nGeometric Product:\n{s}\n", .{alg.p, alg.n, alg.z, ptr});
+    try stdout.print("Algebra Signature: ({},{},{}):\nGeometric Product:\n{s}\n", .{ alg.p, alg.n, alg.z, ptr });
     const ptr1 = try alg.get_cayley_table(allocator, &alg.op_cayley, table_format);
     try stdout.print("Outer Product:\n{s}\n", .{ptr1});
-    
-    const ptr2 = try alg.get_cayley_table(allocator, &alg.ip_cayley,  table_format);
+
+    const ptr2 = try alg.get_cayley_table(allocator, &alg.ip_cayley, table_format);
     try stdout.print("Inner Product:\n{s}\n", .{ptr2});
     const ptr3 = try alg.get_cayley_table(allocator, &alg.rp_cayley, table_format);
     try stdout.print("Regressive Product:\n{s}\n", .{ptr3});
 
     const NVec = alg.NVec;
-    
+
     var buffer: [alg.basis_len * 8 * 1000]u8 = undefined;
     var fba = std.heap.FixedBufferAllocator.init(&buffer);
     const fba_alloc = fba.allocator();
 
     const obj_pool: []NVec = try fba_alloc.alloc(NVec, 10);
     defer fba_alloc.free(obj_pool);
-    
+
     const fst: *NVec = obj_pool[0].zeros();
     fst.terms[0b0000] = 1.2;
     fst.terms[0b0010] = 3.0;
@@ -48,24 +49,24 @@ pub fn main() !void {
     snd.terms[0b1001] = 2.3;
 
     const third: *NVec = obj_pool[2].zeros();
-    _ = fst.gp(snd, .ptr, .{.ptr = third});
+    _ = fst.gp(snd, .ptr, .{ .ptr = third });
 
-    try stdout.print("{} gp {} = {}\n", .{fst, snd, third});
+    try stdout.print("{} gp {} = {}\n", .{ fst, snd, third });
     //51: .LBB5_69
-    _=third.zeros();
-    
+    _ = third.zeros();
+
     //_=fst.gp(snd, .ptr, .{.ptr=third}).add(fst, .ptr, .{.ptr=third});
 
-    try stdout.print("{} gp {} + {} = {}\n", .{fst, snd, fst, third});
+    try stdout.print("{} gp {} + {} = {}\n", .{ fst, snd, fst, third });
     //57: .LBB5_79: same add, same commands but slightly different offsets
     //_=fst.gp_get(snd, .ptr, .{.ptr=third}).add(fst, .ptr, .{.ptr=third});
 
     //try stdout.print("{} gp_get {} + {} = {}\n", .{fst, snd, fst, third});
-    
+
     const frth: *NVec = obj_pool[3].zeros();
-    _=fst.ip(snd, .ptr, .{.ptr=frth});
-    try stdout.print("{} ip {} = {}\n", .{fst, snd, frth});
-    try stdout.print("mag of {} is {}", .{fst, fst.magnitude()});
+    _ = fst.ip(snd, .ptr, .{ .ptr = frth });
+    try stdout.print("{} ip {} = {}\n", .{ fst, snd, frth });
+    try stdout.print("mag of {} is {}", .{ fst, fst.magnitude() });
     //try stdout.print("{s}", .{alg._op_string});
 
     //try stdout.print("NVec.Blade: {}", .{NVec.Blade.e2});
@@ -80,23 +81,24 @@ pub fn main() !void {
 
     const Motor = alg.Motor;
     const mtr: *Motor = try allocator.create(Motor);
-    _=mtr.zeros();
+    _ = mtr.zeros();
     mtr.terms[0] = 1.0;
     mtr.terms[1] = 2.3;
     mtr.terms[2] = 0.21;
     mtr.terms[3] = 1.5;
     const add_res: *NVec = try allocator.create(NVec);
-    _=add_res.zeros();
+    _ = add_res.zeros();
     fst.get(.ptr, .e0).* = 1.2;
     fst.get(.ptr, .e1).* = 0.17;
     fst.get(.ptr, .e2).* = 31.4;
     fst.get(.ptr, .e3).* = 15.6;
-    try stdout.print("motor terms length {}, motor {} + mvec {} = {}", .{Motor.num_terms, mtr, add_res, mtr.add( Motor, fst, NVec, add_res, NVec)});
+    try stdout.print("\nmotor terms length {}, motor {} + mvec {} = {}", .{ Motor.num_terms, mtr, fst, Motor.add(mtr, Motor, fst, NVec, add_res, NVec) });
 
+    try stdout.print("\nNVec subset: {b}, our_idx_to_blade: {b}", .{ NVec.subset_field, NVec.our_idx_to_blade });
+    try stdout.print("\nMotor subset: {b}, our_idx_to_blade: {b}", .{ Motor.subset_field, Motor.our_idx_to_blade });
 }
 
 pub fn benchmark(stdout: anytype, allocator: Allocator) void {
-
     var gp_normal_avg_throughput: f128 = 0.0;
     var gp_get_avg_throughput: f128 = 0.0;
     var gp_better_avg_throughput: f128 = 0.0;
@@ -112,43 +114,38 @@ pub fn benchmark(stdout: anytype, allocator: Allocator) void {
 
     const algs: [max_p]type = comptime blk: {
         var algies: [max_p]type = undefined;
-        for(1..max_p+1) |i| {
-            algies[i-1] = Algebra(i,0,1);
+        for (1..max_p + 1) |i| {
+            algies[i - 1] = Algebra(i, 0, 1);
         }
         break :blk algies;
     };
 
     const nvecs: [max_p]type = comptime blk: {
         var nvies: [max_p]type = undefined;
-        for(1..max_p+1) |i| {
-            nvies[i-1] = algs[i-1].NVec;
+        for (1..max_p + 1) |i| {
+            nvies[i - 1] = algs[i - 1].NVec;
         }
         break :blk nvies;
     };
 
-    inline for(1..max_p+1) |p| {
-
+    inline for (1..max_p + 1) |p| {
         gp_normal_avg_throughput = 0.0;
         gp_get_avg_throughput = 0.0;
         gp_better_avg_throughput = 0.0;
         gp_rolled_avg_throughput = 0.0;
 
         //const alg2 = algs[p-1];
-        const nvec = nvecs[p-1];
+        const nvec = nvecs[p - 1];
 
         const perf_pool: []nvec = try allocator.alloc(nvec, 1000);
-        for(0..100) |_| {
+        for (0..100) |_| {
             var timer: Timer = Timer.start() catch unreachable;
 
-
-
-            while(timer.read() / 1_000_000 < length_milliseconds) {
-
-                for(0..50) |_| {
-
-                    for(0..perf_pool.len) |j| {
+            while (timer.read() / 1_000_000 < length_milliseconds) {
+                for (0..50) |_| {
+                    for (0..perf_pool.len) |j| {
                         const m = &perf_pool[j];
-                        _=m.gp_get(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{.ptr=&perf_pool[(j-%1) % perf_pool.len]});
+                        _ = m.gp_get(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{ .ptr = &perf_pool[(j -% 1) % perf_pool.len] });
                     }
                 }
                 gp_get_iters += 1;
@@ -158,13 +155,11 @@ pub fn benchmark(stdout: anytype, allocator: Allocator) void {
             gp_get_iters = 0;
             timer.reset();
 
-            while(timer.read() / 1_000_000 < length_milliseconds) {
-
-                for(0..50) |_| {
-
-                    for(0..perf_pool.len) |j| {
+            while (timer.read() / 1_000_000 < length_milliseconds) {
+                for (0..50) |_| {
+                    for (0..perf_pool.len) |j| {
                         const m = &perf_pool[j];
-                        _=m.gp(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{.ptr=&perf_pool[(j-%1) % perf_pool.len]} );
+                        _ = m.gp(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{ .ptr = &perf_pool[(j -% 1) % perf_pool.len] });
                     }
                 }
                 gp_normal_iters += 1;
@@ -174,14 +169,11 @@ pub fn benchmark(stdout: anytype, allocator: Allocator) void {
             gp_normal_iters = 0;
             timer.reset();
 
-
-            while(timer.read() / 1_000_000 < length_milliseconds) {
-
-                for(0..50) |_| {
-
-                    for(0..perf_pool.len) |j| {
+            while (timer.read() / 1_000_000 < length_milliseconds) {
+                for (0..50) |_| {
+                    for (0..perf_pool.len) |j| {
                         const m = &perf_pool[j];
-                        _=m.gp_better(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{.ptr=&perf_pool[(j-%1) % perf_pool.len]});
+                        _ = m.gp_better(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{ .ptr = &perf_pool[(j -% 1) % perf_pool.len] });
                     }
                 }
                 gp_better_iters += 1;
@@ -191,14 +183,12 @@ pub fn benchmark(stdout: anytype, allocator: Allocator) void {
             gp_better_iters = 0;
             timer.reset();
 
-            while(timer.read() / 1_000_000 < length_milliseconds) {
-
-                for(0..50) |_| {
-
-                    for(0..perf_pool.len) |j| {
+            while (timer.read() / 1_000_000 < length_milliseconds) {
+                for (0..50) |_| {
+                    for (0..perf_pool.len) |j| {
                         const m = &perf_pool[j];
 
-                        _=m.gp_not_unrolled(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{.ptr=&perf_pool[(j-%1) % perf_pool.len]});
+                        _ = m.gp_not_unrolled(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{ .ptr = &perf_pool[(j -% 1) % perf_pool.len] });
                     }
                 }
                 gp_rolled_iters += 1;
@@ -207,18 +197,16 @@ pub fn benchmark(stdout: anytype, allocator: Allocator) void {
             gp_rolled_avg_throughput = 0.5 * gp_rolled_avg_throughput + 0.5 * @as(f128, @floatFromInt(gp_rolled_iters)) * 50.0 * @as(f128, @floatFromInt(perf_pool.len)) / @as(f128, @floatFromInt(length_milliseconds));
             gp_rolled_iters = 0;
             timer.reset();
-
-
         }
 
-        try stdout.print("\nalgebra({},0,1): gp() got {:.4} avg calls / ms, reordered gp() got {:.4} avg calls / ms, no lookup table gp() got {:.4} avg calls / ms, non inlined gp() got {:.4} avg calls / ms", .{p, gp_normal_avg_throughput, gp_get_avg_throughput, gp_better_avg_throughput, gp_rolled_avg_throughput});
+        try stdout.print("\nalgebra({},0,1): gp() got {:.4} avg calls / ms, reordered gp() got {:.4} avg calls / ms, no lookup table gp() got {:.4} avg calls / ms, non inlined gp() got {:.4} avg calls / ms", .{ p, gp_normal_avg_throughput, gp_get_avg_throughput, gp_better_avg_throughput, gp_rolled_avg_throughput });
     }
 }
 
 pub fn factorial(n: anytype) @TypeOf(n) {
     var result = 1;
     var k = n;
-    while(k > 1) {
+    while (k > 1) {
         result *= k;
         k -= 1;
     }
@@ -237,17 +225,17 @@ pub fn n_choose_k(n: anytype, k: @TypeOf(n)) @TypeOf(n) {
 pub fn cycle_sort_ret_writes(T: anytype, slice: []T) usize {
     var cycle_elements: usize = 0;
     var cycles: usize = 0;
-    for(0..slice.len) |cycle_start| {
+    for (0..slice.len) |cycle_start| {
         var item = slice[cycle_start];
         var pos = cycle_start;
         //everything behind us is definitely sorted, some things ahead of us may be sorted
-        for(slice[cycle_start+1..slice.len]) |ahead| {
-            if(ahead < item) {
+        for (slice[cycle_start + 1 .. slice.len]) |ahead| {
+            if (ahead < item) {
                 pos += 1;
             }
         }
 
-        if(pos != cycle_start) {
+        if (pos != cycle_start) {
             cycles += 1;
             //cycle_elements += 1;
         }
@@ -255,11 +243,11 @@ pub fn cycle_sort_ret_writes(T: anytype, slice: []T) usize {
         //if correct and real pos's are different, then there is a cycle of some length that includes item and the item_at_correct_pos's pos
         //and item_at_correct_pos's_correct_pos and so on until item_at_correct_pos's_correct_pos's..._correct_pos = pos
         //all cycles are disjoint, and the number of writes is the sum of the length of each cycle - number of cycles
-        while(pos != cycle_start) {
+        while (pos != cycle_start) {
             //writes += 1;
             pos = cycle_start;
-            for(slice[cycle_start+1..slice.len]) |ahead| {
-                if(ahead < item) {
+            for (slice[cycle_start + 1 .. slice.len]) |ahead| {
+                if (ahead < item) {
                     pos += 1;
                 }
             }
@@ -278,7 +266,7 @@ fn count_bits(v: usize) usize {
     var val = v;
     var count: usize = 0;
     //var parity: bool = false;
-    while(val != 0) {
+    while (val != 0) {
         //parity = !parity;
         count += 1;
         val &= val - 1;
@@ -296,7 +284,7 @@ fn count_bits(v: usize) usize {
 fn count_flips(left: usize, rhs: usize) usize {
     var lhs = left >> 1;
     var flips: usize = 0;
-    while(lhs != 0) {
+    while (lhs != 0) {
         flips += count_bits(lhs & rhs);
         lhs >>= 1;
     }
@@ -306,7 +294,7 @@ fn count_flips(left: usize, rhs: usize) usize {
 fn flips_value(left: usize, rhs: usize) isize {
     var lhs = left >> 1;
     var val: isize = 1;
-    while(lhs != 0) {
+    while (lhs != 0) {
         //val = val * (1 - 2 * (count_bits(lhs & rhs) & 1));
         val = (val + @as(isize, @bitCast(count_bits(lhs & rhs) & 1))) & 1;
         lhs >>= 1;
@@ -317,7 +305,7 @@ fn flips_value(left: usize, rhs: usize) isize {
 fn flips_value_parity(left: usize, rhs: usize, comptime d: comptime_int) isize {
     var lhs = left >> 1;
     var val: isize = 1;
-    while(lhs != 0) {
+    while (lhs != 0) {
         //val = val * (1 - 2 * (count_bits(lhs & rhs) & 1));
         val &= @intCast(even_parity(lhs & rhs, d) & 1);
         lhs >>= 1;
@@ -326,19 +314,19 @@ fn flips_value_parity(left: usize, rhs: usize, comptime d: comptime_int) isize {
 }
 
 fn even_parity(field: usize, comptime d: comptime_int) usize {
-    if(d > 64) {
+    if (d > 64) {
         @compileError("even_parity() doesnt support field sizes greater than 64 bits");
     }
-    if(d == 64) {
+    if (d == 64) {
         field ^= field >> 32;
     }
-    if(d >= 32) {
+    if (d >= 32) {
         field ^= field >> 16;
     }
-    if(d >= 16) {
+    if (d >= 16) {
         field ^= field >> 8;
     }
-    if(d <= 8) {
+    if (d <= 8) {
         const hex_coeff: usize = 0x0101010101010101;
         const hex_andeff: usize = 0x8040201008040201;
         return (((field * hex_coeff) & hex_andeff) % 0x1FF) & 1;
@@ -352,10 +340,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
     const _d: usize = _p + _n + _z;
     const basis_size: usize = std.math.pow(usize, 2, _d);
 
-
     const bin_basis: [basis_size]usize = comptime blk: {
         var ret: [basis_size]usize = undefined;
-        for(0..basis_size) |blade| {
+        for (0..basis_size) |blade| {
             ret[blade] = blade;
         }
         break :blk ret;
@@ -377,15 +364,15 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
     var zero_mask: usize = 0;
     var pos_mask: usize = 0;
     var neg_mask: usize = 0;
-    
-    for(0.._d) |b| { // bitfield gen
-        if(z_bits > 0) {
+
+    for (0.._d) |b| { // bitfield gen
+        if (z_bits > 0) {
             z_bits -= 1;
             zero_mask |= (0b1 << b);
-        } else if(p_bits > 0) {
+        } else if (p_bits > 0) {
             p_bits -= 1;
             pos_mask |= (0b1 << b);
-        } else if(n_bits > 0) {
+        } else if (n_bits > 0) {
             n_bits -= 1;
             neg_mask |= (0b1 << b);
         }
@@ -393,29 +380,22 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
     //@compileLog("zero, pos, neg: ", zero_mask, pos_mask, neg_mask, "0b10000:", 0b10000, "count_bits(0b1001):", count_bits(0b1001), "count_flips(e12 = 0b0011, e1 = 0b0001):", count_flips(0b0011, 0b0001));
 
-    const BinBlade = struct{
-        value: isize,
-        blade: usize
-    };
+    const BinBlade = struct { value: isize, blade: usize };
 
-    const ProdTerm = struct {
-        mult: T,
-        left_blade: usize,
-        right_blade: usize
-    };
+    const ProdTerm = struct { mult: T, left_blade: usize, right_blade: usize };
 
     @setEvalBranchQuota(1000000);
 
-    var bin_gp_cayley_table: [basis_size][basis_size]BinBlade = .{.{.{.value = 0, .blade = 0}} ** basis_size} ** basis_size;
-    var bin_op_cayley_table: [basis_size][basis_size]BinBlade = .{.{.{.value = 0, .blade = 0}} ** basis_size} ** basis_size;
-    var bin_ip_cayley_table: [basis_size][basis_size]BinBlade = .{.{.{.value = 0, .blade = 0}} ** basis_size} ** basis_size;
-    var bin_rp_cayley_table: [basis_size][basis_size]BinBlade = .{.{.{.value = 0, .blade = 0}} ** basis_size} ** basis_size;
+    var bin_gp_cayley_table: [basis_size][basis_size]BinBlade = .{.{.{ .value = 0, .blade = 0 }} ** basis_size} ** basis_size;
+    var bin_op_cayley_table: [basis_size][basis_size]BinBlade = .{.{.{ .value = 0, .blade = 0 }} ** basis_size} ** basis_size;
+    var bin_ip_cayley_table: [basis_size][basis_size]BinBlade = .{.{.{ .value = 0, .blade = 0 }} ** basis_size} ** basis_size;
+    var bin_rp_cayley_table: [basis_size][basis_size]BinBlade = .{.{.{ .value = 0, .blade = 0 }} ** basis_size} ** basis_size;
 
     //array {blade idx = {{lhs blade that produces this, rhs blade that produces this}, ...}, ...}
-    var bin_gp_cayley_table_inverse: [basis_size][basis_size]ProdTerm = .{.{.{.mult = 1.0, .left_blade = basis_size + 1, .right_blade = basis_size + 1}} ** basis_size} ** basis_size;
-    var bin_op_cayley_table_inverse: [basis_size][basis_size]ProdTerm = .{.{.{.mult = 1.0, .left_blade = basis_size + 1, .right_blade = basis_size + 1}} ** basis_size} ** basis_size;
-    var bin_ip_cayley_table_inverse: [basis_size][basis_size]ProdTerm = .{.{.{.mult = 1.0, .left_blade = basis_size + 1, .right_blade = basis_size + 1}} ** basis_size} ** basis_size;
-    var bin_rp_cayley_table_inverse: [basis_size][basis_size]ProdTerm = .{.{.{.mult = 1.0, .left_blade = basis_size + 1, .right_blade = basis_size + 1}} ** basis_size} ** basis_size;
+    var bin_gp_cayley_table_inverse: [basis_size][basis_size]ProdTerm = .{.{.{ .mult = 1.0, .left_blade = basis_size + 1, .right_blade = basis_size + 1 }} ** basis_size} ** basis_size;
+    var bin_op_cayley_table_inverse: [basis_size][basis_size]ProdTerm = .{.{.{ .mult = 1.0, .left_blade = basis_size + 1, .right_blade = basis_size + 1 }} ** basis_size} ** basis_size;
+    var bin_ip_cayley_table_inverse: [basis_size][basis_size]ProdTerm = .{.{.{ .mult = 1.0, .left_blade = basis_size + 1, .right_blade = basis_size + 1 }} ** basis_size} ** basis_size;
+    var bin_rp_cayley_table_inverse: [basis_size][basis_size]ProdTerm = .{.{.{ .mult = 1.0, .left_blade = basis_size + 1, .right_blade = basis_size + 1 }} ** basis_size} ** basis_size;
 
     var gp_inv_idx: [basis_size]usize = .{0} ** basis_size;
     var op_inv_idx: [basis_size]usize = .{0} ** basis_size;
@@ -424,20 +404,20 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
     const pseudoscalar_blade: isize = comptime blk: {
         var val: usize = 0;
-        for(0.._d) |i| {
+        for (0.._d) |i| {
             val |= (1 << i);
         }
         break :blk val;
     };
 
-    for(0..basis_size) |lhs| {
-        for(0..basis_size) |rhs| {
+    for (0..basis_size) |lhs| {
+        for (0..basis_size) |rhs| {
             const squares: usize = lhs & rhs;
 
             const lhsI: isize = lhs ^ pseudoscalar_blade;
             const rhsI: isize = rhs ^ pseudoscalar_blade;
             const dual_squares: isize = lhsI & rhsI;
-            if(dual_squares == 0) {
+            if (dual_squares == 0) {
 
                 //const ineg_mask: isize = @bitCast(neg_mask);
                 //const lhsI_value: isize = -2 * (((@as(isize, @bitCast(lhs)) & pseudoscalar_blade & ineg_mask) ^ count_flips(lhs, pseudoscalar_blade)) & 1) + 1;
@@ -449,14 +429,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 //    @compileLog("dual value ", dual_value, " != ", dual_value / (lhsI_value * rhsI_value), " for lhs and rhs: ", lhsI_value, rhsI_value);
                 //}
 
-                bin_rp_cayley_table[lhs][rhs] = .{.value = dual_value, .blade = @bitCast(dual_blade)};
+                bin_rp_cayley_table[lhs][rhs] = .{ .value = dual_value, .blade = @bitCast(dual_blade) };
 
-
-                bin_rp_cayley_table_inverse[@bitCast(dual_blade)][rp_inv_idx[@bitCast(dual_blade)]] = .{.mult = bin_rp_cayley_table[lhs][rhs].value, .left_blade = lhs, .right_blade = rhs};
+                bin_rp_cayley_table_inverse[@bitCast(dual_blade)][rp_inv_idx[@bitCast(dual_blade)]] = .{ .mult = bin_rp_cayley_table[lhs][rhs].value, .left_blade = lhs, .right_blade = rhs };
                 rp_inv_idx[@bitCast(dual_blade)] += 1;
             }
 
-            if(squares & zero_mask != 0) {
+            if (squares & zero_mask != 0) {
                 continue;
             }
             const flips = count_flips(lhs, rhs);
@@ -466,20 +445,20 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             //@bitCast(@as(u8,@truncate((((squares & neg_mask) ^ flips) & 1) << 7)));
             const gp_blade: usize = lhs ^ rhs; //xor = or == true, and not and == true
             //@compileLog("lhs: ", lhs, "rhs: ", rhs, "value:", value, "blade:", blade);
-            bin_gp_cayley_table[lhs][rhs] = .{.value = value, .blade = gp_blade};
-            bin_gp_cayley_table_inverse[gp_blade][gp_inv_idx[gp_blade]] = .{.mult = value, .left_blade = lhs, .right_blade = rhs};
+            bin_gp_cayley_table[lhs][rhs] = .{ .value = value, .blade = gp_blade };
+            bin_gp_cayley_table_inverse[gp_blade][gp_inv_idx[gp_blade]] = .{ .mult = value, .left_blade = lhs, .right_blade = rhs };
             gp_inv_idx[gp_blade] += 1;
             //if the two blades have no common non scalar factors then they get turned to 0
             const ul = lhs & gp_blade; //lhs & ((lhs | rhs) & ~(lhs & rhs))
             const ur = rhs & gp_blade;
-            bin_ip_cayley_table[lhs][rhs] = .{.value = if(ul == 0 or ur == 0) value else 0, .blade = gp_blade};
+            bin_ip_cayley_table[lhs][rhs] = .{ .value = if (ul == 0 or ur == 0) value else 0, .blade = gp_blade };
 
-            bin_ip_cayley_table_inverse[gp_blade][ip_inv_idx[gp_blade]] = .{.mult = bin_ip_cayley_table[lhs][rhs].value, .left_blade = lhs, .right_blade = rhs};
+            bin_ip_cayley_table_inverse[gp_blade][ip_inv_idx[gp_blade]] = .{ .mult = bin_ip_cayley_table[lhs][rhs].value, .left_blade = lhs, .right_blade = rhs };
             ip_inv_idx[gp_blade] += 1;
 
-            if(squares == 0) {
-                bin_op_cayley_table[lhs][rhs] = .{.value= if(flips & 1) -1 else 1, .blade = gp_blade};
-                bin_op_cayley_table_inverse[gp_blade][op_inv_idx[gp_blade]] = .{.mult = bin_op_cayley_table[lhs][rhs].value, .left_blade = lhs, .right_blade = rhs};
+            if (squares == 0) {
+                bin_op_cayley_table[lhs][rhs] = .{ .value = if (flips & 1) -1 else 1, .blade = gp_blade };
+                bin_op_cayley_table_inverse[gp_blade][op_inv_idx[gp_blade]] = .{ .mult = bin_op_cayley_table[lhs][rhs].value, .left_blade = lhs, .right_blade = rhs };
                 op_inv_idx[gp_blade] += 1;
             }
         }
@@ -534,75 +513,74 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             None,
         };
         pub const signature_name = blk: {
-            if(z == 1 and n == 0 and p > 0) {
+            if (z == 1 and n == 0 and p > 0) {
                 break :blk KnownSignatures.PGAnd;
             }
-            if(n == 1 and z == 0 and p > 0) {
+            if (n == 1 and z == 0 and p > 0) {
                 break :blk KnownSignatures.CGAnd;
             }
-            if(z == 0 and n == 0 and p > 0) {
+            if (z == 0 and n == 0 and p > 0) {
                 break :blk KnownSignatures.VGAnd;
             }
         };
 
-        pub const gp_cayley: [basis_len][] const BinBlade = blk: {
-            var arr: [basis_size][] const BinBlade = undefined;
-            for(0..basis_size) |i| {
+        pub const gp_cayley: [basis_len][]const BinBlade = blk: {
+            var arr: [basis_size][]const BinBlade = undefined;
+            for (0..basis_size) |i| {
                 arr[i] = _bin_gp_cayley_table[i][0.._bin_gp_cayley_table.len];
             }
             break :blk arr;
         };
-        pub const op_cayley: [basis_len][] const BinBlade = blk: {
-            var arr: [basis_size][] const BinBlade = undefined;
-            for(0..basis_size) |i| {
+        pub const op_cayley: [basis_len][]const BinBlade = blk: {
+            var arr: [basis_size][]const BinBlade = undefined;
+            for (0..basis_size) |i| {
                 arr[i] = _bin_op_cayley_table[i][0.._bin_op_cayley_table.len];
             }
             break :blk arr;
         };
-        pub const ip_cayley: [basis_len][] const BinBlade = blk: {
-            var arr: [basis_size][] const BinBlade = undefined;
-            for(0..basis_size) |i| {
+        pub const ip_cayley: [basis_len][]const BinBlade = blk: {
+            var arr: [basis_size][]const BinBlade = undefined;
+            for (0..basis_size) |i| {
                 arr[i] = _bin_ip_cayley_table[i][0.._bin_ip_cayley_table.len];
             }
             break :blk arr;
         };
-        pub const rp_cayley: [basis_len][] const BinBlade = blk: {
-            var arr: [basis_size][] const BinBlade = undefined;
-            for(0..basis_size) |i| {
+        pub const rp_cayley: [basis_len][]const BinBlade = blk: {
+            var arr: [basis_size][]const BinBlade = undefined;
+            for (0..basis_size) |i| {
                 arr[i] = _bin_rp_cayley_table[i][0.._bin_rp_cayley_table.len];
             }
             break :blk arr;
         };
 
-        pub const gp_inverse: [basis_len][] const ProdTerm = blk: {
-            var arr: [basis_size][] const ProdTerm = undefined;
-            for(0..basis_size) |i| {
+        pub const gp_inverse: [basis_len][]const ProdTerm = blk: {
+            var arr: [basis_size][]const ProdTerm = undefined;
+            for (0..basis_size) |i| {
                 arr[i] = _bin_gp_cayley_table_inv[i][0.._bin_gp_cayley_table_inv.len];
             }
             break :blk arr;
         };
-        pub const op_inverse: [basis_len][] const ProdTerm = blk: {
-            var arr: [basis_size][] const ProdTerm = undefined;
-            for(0..basis_size) |i| {
+        pub const op_inverse: [basis_len][]const ProdTerm = blk: {
+            var arr: [basis_size][]const ProdTerm = undefined;
+            for (0..basis_size) |i| {
                 arr[i] = _bin_op_cayley_table_inv[i][0.._bin_op_cayley_table_inv.len];
             }
             break :blk arr;
         };
-        pub const ip_inverse: [basis_len][] const ProdTerm = blk: {
-            var arr: [basis_size][] const ProdTerm = undefined;
-            for(0..basis_size) |i| {
+        pub const ip_inverse: [basis_len][]const ProdTerm = blk: {
+            var arr: [basis_size][]const ProdTerm = undefined;
+            for (0..basis_size) |i| {
                 arr[i] = _bin_ip_cayley_table_inv[i][0.._bin_ip_cayley_table_inv.len];
             }
             break :blk arr;
         };
-        pub const rp_inverse: [basis_len][] const ProdTerm = blk: {
-            var arr: [basis_size][] const ProdTerm = undefined;
-            for(0..basis_size) |i| {
+        pub const rp_inverse: [basis_len][]const ProdTerm = blk: {
+            var arr: [basis_size][]const ProdTerm = undefined;
+            for (0..basis_size) |i| {
                 arr[i] = _bin_rp_cayley_table_inv[i][0.._bin_rp_cayley_table_inv.len];
             }
             break :blk arr;
         };
-
 
         pub const BladeFormats = enum {
             const Us = @This();
@@ -612,15 +590,15 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             decimal_no_e,
 
             pub fn should_print_e(self: Us) bool {
-                return switch(self) {
+                return switch (self) {
                     .binary_no_e => false,
                     .decimal_no_e => false,
-                    else => true
+                    else => true,
                 };
             }
 
             pub fn base(self: Us) usize {
-                return switch(self) {
+                return switch (self) {
                     .binary_blades, .binary_no_e => 2,
                     .normal, .decimal_no_e => 10,
                 };
@@ -634,64 +612,61 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             nonzero_scalars_as_blade: bool = false,
         };
 
-
         //fn FormatMatrix(rows: usize, columns: usize) type {
-        // 
+        //
         //    var ret = struct {
         //        const us = @This();
         //        elements: [rows][columns] ElementFormat,
-        // 
+        //
         //        fn concat_rows() us {
-        // 
+        //
         //        }
         //    };
         //}
-        // 
+        //
         //pub const Alignment = enum {
         //    close, //left hand side for columns up side in rows
         //    center,
         //    far
         //};
-        // 
+        //
         //pub const TableFormat = struct {
         //    element_formats: [] const RowFormat,
-        // 
+        //
         //    column_alignment: Alignment = .center,
         //    row_alignment: Alignment = .center,
-        // 
+        //
         //    //number of extra spaces inserted into every row's string slice
         //    horizontal_padding: usize = 0,
         //    ///number of extra newlines inserted between table rows
         //    vertical_padding: usize = 0,
-        // 
+        //
         //    horizontal_padding_char: u8 = '|',
         //    vertical_padding_char: u8 = '-'
-        // 
+        //
         //};
 
         //pub const TableFormat = []RowFormat;
 
         fn cayley_printer(element: BinBlade, current_slice: []u8, fmt: RowFormat) void {
-            const mid_slice = @as(usize, @as(usize, @intFromFloat(std.math.ceil(@as(T, @floatFromInt(current_slice.len)) / 2.0))))-1;
-            for(0..current_slice.len) |i| {
+            const mid_slice = @as(usize, @as(usize, @intFromFloat(std.math.ceil(@as(T, @floatFromInt(current_slice.len)) / 2.0)))) - 1;
+            for (0..current_slice.len) |i| {
                 current_slice[i] = ' ';
             }
 
-            if(fmt.ignore_zeroes == false) {
-
-                if(element.value == 0) { //0
+            if (fmt.ignore_zeroes == false) {
+                if (element.value == 0) { //0
                     current_slice[mid_slice] = '0';
                     return;
                 }
             }
 
-
             const is_negative: bool = element.value < 0;
-            const starting_factor_label = if(z > 0) 0 else 1;
+            const starting_factor_label = if (z > 0) 0 else 1;
             const num_labels = count_bits(element.blade);
 
-            if(fmt.nonzero_scalars_as_blade == false and num_labels == 0) { //scalar
-                if(is_negative and fmt.print_parity == true) {
+            if (fmt.nonzero_scalars_as_blade == false and num_labels == 0) { //scalar
+                if (is_negative and fmt.print_parity == true) {
                     current_slice[mid_slice] = '-';
                     current_slice[mid_slice + 1] = '1';
                 } else {
@@ -701,51 +676,50 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             }
 
             var num_chars: usize = num_labels;
-            if(fmt.blade_fmt.base() == 2) {
+            if (fmt.blade_fmt.base() == 2) {
                 num_chars = d;
             }
-            if(fmt.blade_fmt.should_print_e()) {
+            if (fmt.blade_fmt.should_print_e()) {
                 num_chars += 1;
             }
-            if(is_negative and fmt.print_parity == true) {
+            if (is_negative and fmt.print_parity == true) {
                 num_chars += 1;
             }
-            
+
             var left_margin: usize = 0;
             var right_margin: usize = 0;
             var leftover_margin = current_slice.len - num_chars;
 
-            while(leftover_margin > 0) {
+            while (leftover_margin > 0) {
                 leftover_margin -= 1;
                 left_margin += 1;
-                if(leftover_margin > 0) {
+                if (leftover_margin > 0) {
                     leftover_margin -= 1;
                     right_margin += 1;
                 }
             }
 
             var i = left_margin;
-            if(is_negative == true and fmt.print_parity == true) {
+            if (is_negative == true and fmt.print_parity == true) {
                 current_slice[i] = '-';
                 i += 1;
             }
-            if(fmt.blade_fmt.should_print_e() == true) {
-
+            if (fmt.blade_fmt.should_print_e() == true) {
                 current_slice[i] = 'e';
                 i += 1;
             }
 
             var current_bit_index: usize = 0;
-            if(fmt.blade_fmt.base() == 10) {
-                for(0..num_labels) |fac_i| {
-                    while(current_bit_index < 10) {
+            if (fmt.blade_fmt.base() == 10) {
+                for (0..num_labels) |fac_i| {
+                    while (current_bit_index < 10) {
                         const one: usize = 0b1;
-                        if(element.blade & (one << @truncate(current_bit_index)) != 0) {
+                        if (element.blade & (one << @truncate(current_bit_index)) != 0) {
                             break;
                         }
                         current_bit_index += 1;
                     }
-                    if(fmt.blade_fmt.base() != 2 and current_bit_index > 9) {
+                    if (fmt.blade_fmt.base() != 2 and current_bit_index > 9) {
                         current_slice[i + fac_i] = 'X';
                         return;
                     }
@@ -754,31 +728,28 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     current_bit_index += 1;
                 }
             } else {
-                var bit_index = d-1;
-                while(bit_index >= 0) {
-                    current_slice[i + bit_index] = @truncate(((element.blade >> @truncate((d-1)-bit_index)) & 1) + 48);
-                    if(bit_index == 0) {
+                var bit_index = d - 1;
+                while (bit_index >= 0) {
+                    current_slice[i + bit_index] = @truncate(((element.blade >> @truncate((d - 1) - bit_index)) & 1) + 48);
+                    if (bit_index == 0) {
                         break;
                     }
                     bit_index -= 1;
                 }
-
             }
         }
 
-
-
-        fn get_cayley_table(allocator: Allocator, cayley: []const[]const BinBlade, fmt: []const RowFormat) ![]u8 {
+        fn get_cayley_table(allocator: Allocator, cayley: []const []const BinBlade, fmt: []const RowFormat) ![]u8 {
             var maximum: usize = 0;
-            for(fmt) |row| {
+            for (fmt) |row| {
                 var elem_size = d;
-                if(row.print_parity == true) {
+                if (row.print_parity == true) {
                     elem_size += 1;
                 }
-                if(row.blade_fmt.should_print_e() == true) {
+                if (row.blade_fmt.should_print_e() == true) {
                     elem_size += 1;
                 }
-                if(elem_size > maximum) {
+                if (elem_size > maximum) {
                     maximum = elem_size;
                 }
             }
@@ -789,17 +760,17 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         }
 
         fn FormatTableElementPrinter(ElemType: type) type {
-            return *const fn(elem: ElemType, string_slice: []u8, fmt: RowFormat) void;
+            return *const fn (elem: ElemType, string_slice: []u8, fmt: RowFormat) void;
         }
 
-        fn format_table_string(elem_type: type, table: []const []const elem_type, buffer: []u8, fmt: [] const RowFormat, max_chars_per_element: usize, element_printer: FormatTableElementPrinter(elem_type)) void {
+        fn format_table_string(elem_type: type, table: []const []const elem_type, buffer: []u8, fmt: []const RowFormat, max_chars_per_element: usize, element_printer: FormatTableElementPrinter(elem_type)) void {
             var current_string_idx: usize = 0;
             const max_chars_per_index = max_chars_per_element + 1;
-            for(0..table.len * fmt.len) |table_r| {
-                for(0..table[table_r % table.len].len) |table_c| {
-                    var current_slice = buffer[current_string_idx..current_string_idx + max_chars_per_index];
+            for (0..table.len * fmt.len) |table_r| {
+                for (0..table[table_r % table.len].len) |table_c| {
+                    var current_slice = buffer[current_string_idx .. current_string_idx + max_chars_per_index];
                     const ending_char: u8 = blk: {
-                        if(table_c == table[table_r % table.len].len - 1) {
+                        if (table_c == table[table_r % table.len].len - 1) {
                             break :blk '\n';
                         }
                         break :blk ' ';
@@ -810,74 +781,66 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         current_string_idx += max_chars_per_index;
                     }
 
-                    element_printer(table[table_r % table.len][table_c], current_slice[0..current_slice.len - 1], fmt[table_r % fmt.len]);
+                    element_printer(table[table_r % table.len][table_c], current_slice[0 .. current_slice.len - 1], fmt[table_r % fmt.len]);
                 }
             }
         }
 
         fn GenBlade() type {
 
-                //we want .fields,
-                //var blade = @typeInfo(enum(isize){});
-                var fields: [Alg.basis_len]std.builtin.Type.EnumField = undefined;
-                var decls = [_]std.builtin.Type.Declaration{};
-                //const existing_fields = @typeInfo(Self.ResTypes).Enum.fields;
-                //@compileLog( "@typeInfo(Self.ResTypes).Enum.fields) = ", existing_fields, "existing_fields[0].name: ", existing_fields[0].name);
-                for(&fields, 0..Alg.basis_len) |*field, i| {
-                    var name1: [:0] const u8 = "";
-                    var n_i = 0;
-                    if(i == 0) {
+            //we want .fields,
+            //var blade = @typeInfo(enum(isize){});
+            var fields: [Alg.basis_len]std.builtin.Type.EnumField = undefined;
+            var decls = [_]std.builtin.Type.Declaration{};
+            //const existing_fields = @typeInfo(Self.ResTypes).Enum.fields;
+            //@compileLog( "@typeInfo(Self.ResTypes).Enum.fields) = ", existing_fields, "existing_fields[0].name: ", existing_fields[0].name);
+            for (&fields, 0..Alg.basis_len) |*field, i| {
+                var name1: [:0]const u8 = "";
+                var n_i = 0;
+                if (i == 0) {
 
-                        //name1[n_i] = 's';
-                        name1 = name1 ++ "s";
-                        n_i += 1;
-                    } else {
-                        //name1[n_i] = 'e';
-                        name1 = name1 ++ "e";
-                        n_i += 1;
+                    //name1[n_i] = 's';
+                    name1 = name1 ++ "s";
+                    n_i += 1;
+                } else {
+                    //name1[n_i] = 'e';
+                    name1 = name1 ++ "e";
+                    n_i += 1;
 
-                        for(0..Alg.d+1) |n_j| {
-
-                            const val = (i >> n_j) & 1;
-                            if(val != 0) {
-                                var char: u8 = '1' + n_j;
-                                if(Alg.z > 0) {
-                                    char -= 1;
-                                }
-                                //name1[n_i] = char;
-                                name1 = name1 ++ .{char};
-                                n_i+=1;
+                    for (0..Alg.d + 1) |n_j| {
+                        const val = (i >> n_j) & 1;
+                        if (val != 0) {
+                            var char: u8 = '1' + n_j;
+                            if (Alg.z > 0) {
+                                char -= 1;
                             }
+                            //name1[n_i] = char;
+                            name1 = name1 ++ .{char};
+                            n_i += 1;
                         }
-
                     }
-                    
+                }
 
-                    //const used_name: [:0]const u8 = name1[0..Alg.d+1]++"";
+                //const used_name: [:0]const u8 = name1[0..Alg.d+1]++"";
 
-                    field.* = .{
-                        .name = name1,
-                        .value = i
-                    };
-                } 
+                field.* = .{ .name = name1, .value = i };
+            }
 
-                const ret = @Type(.{
-                    .Enum = .{
-                        .tag_type = std.math.IntFittingRange(0, Alg.basis_len-1),
-                        .fields = &fields,
-                        .decls = &decls,
-                        .is_exhaustive = true,
-                    }
-                });
-                //const info = @typeInfo(ret);
-                //@compileLog("@typeInfo(reified type) = ", info, "info.Enum = ", info.Enum, "info.Enum.fields = ", info.Enum.fields, "info.Enum.fields[4] (should be e2) = ", info.Enum.fields[4], "name = ", info.Enum.fields[4].name);
-                return ret;
+            const ret = @Type(.{ .Enum = .{
+                .tag_type = std.math.IntFittingRange(0, Alg.basis_len - 1),
+                .fields = &fields,
+                .decls = &decls,
+                .is_exhaustive = true,
+            } });
+            //const info = @typeInfo(ret);
+            //@compileLog("@typeInfo(reified type) = ", info, "info.Enum = ", info.Enum, "info.Enum.fields = ", info.Enum.fields, "info.Enum.fields[4] (should be e2) = ", info.Enum.fields[4], "name = ", info.Enum.fields[4].name);
+            return ret;
         }
 
         pub const BasisBladeEnum = GenBlade(); //TODO: array?
         pub const BasisBlades: [basis_size]BasisBladeEnum = blk: {
             var ret: [basis_size]BasisBladeEnum = undefined;
-            for(0..basis_size) |i| {
+            for (0..basis_size) |i| {
                 ret[i] = @enumFromInt(i);
             }
             break :blk ret;
@@ -892,8 +855,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
         //}
 
-
-        pub fn MVecSubset(comptime dyn: [] const usize) type {
+        pub fn MVecSubset(comptime subset: usize) type {
 
             //Naive (Multi) Vector - full basis_size elements
             const ret = struct {
@@ -901,7 +863,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 const Self: type = @This();
                 pub const ResTypes = enum {
                     alloc_new,
-                    ptr, 
+                    ptr,
                 };
                 pub const ResSemantics = union {
                     alloc_new: Allocator,
@@ -909,27 +871,30 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 };
 
                 pub const name = [_]u8{"Multivector"};
+                pub const subset_field: usize = subset;
 
-        
                 pub const unbroken_range: bool = blk: {
-                    break :blk if(dyn.len == Self.basis_len) true else blk2: {
-                    var last_enum = @intFromEnum(dyn[0]);
-                    if(dyn.len > 1) {
-                        for(1..dyn.len) |i| {
-                            const x = @intFromEnum(dyn[i]);
-                            if(x != last_enum + 1) {
-                                break :blk2 false;
-                            }
-                            last_enum = x;
+                    var bit_index = 0;
+                    const one = 1;
+                    var sbset = subset;
+                    var found_one_before: bool = false;
+                    //var remaining_cardinality = count_bits(subset);
+                    while (sbset != 0) {
+                        defer bit_index += 1;
+                        const cur_mask = one << bit_index;
+                        const val = sbset & cur_mask;
+                        if (val == 0 and found_one_before) {
+                            break :blk false;
                         }
-                        break :blk2 false;
-                    } else {
-                        break :blk2 true;
+                        if (val != 0) {
+                            found_one_before = true;
+                            sbset ^= cur_mask;
+                        }
                     }
-                };};
+                    break :blk true;
+                };
 
-
-                pub const num_terms: usize = dyn.len;
+                pub const num_terms: usize = count_bits(subset);
 
                 ///when converted to MVecSubset this MUST only contain the blades specific to this instance
                 pub const Blade: type = Self.Algebra.BasisBladeEnum;
@@ -940,29 +905,47 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 //    }
                 //    break :blk ret;
                 //};
-                pub const indices = blk: {
-                    var ret: [Self.num_terms] usize = undefined;
-                    for(0..Self.num_terms) |i| {
-                        ret[i] = dyn[i];
+                /// since blade binary rep == mvec index of blade, this also gets the mvec index
+                /// bit field where the ith multiple of d LSB's (e.g. d = 4 and i = 2 means bits 4 * 2 through 4 * 2 + 3 from the LSB)
+                /// corresponds to the ith blade in the full mvec.
+                /// find it with (our_index_to_blade >> index in our array) & ((0b1 << d) - 1)
+                /// everything more significant than the largest blade value is set to 0b1111... (maybe find a better solution)
+                pub const our_idx_to_blade = blk: {
+                    var ret: usize = 0b0;
+                    var bit_index: usize = 0b0;
+                    //const one: usize = 0b1;
+                    var ones_left = num_terms;
+                    while (ones_left > 0) {
+                        defer bit_index += 1;
+                        const one: usize = 0b1;
+                        const ith_bit: usize = (subset >> bit_index) & one;
+                        if (ith_bit > 0) {
+                            //@compileLog(subset, ": 1 found at index ", ith_bit, );
+                            //@compileLog(comptimePrint("subset {b}, 1 found at index {}, ret was {b} and now set to {b}", .{ subset, bit_index, ret, ret | (bit_index << (d * (num_terms - ones_left))) }));
+                            //if 3 original terms and: 3 terms left then shift 0 terms (ret = 0b[blade1]), 2 terms left then shift once (ret = 0b[blade2][blade1])
+                            //1 term left then shift twice (ret = 0b[blade3][blade2][blade1])
+                            ret |= (bit_index << (d * (num_terms - ones_left)));
+                            ones_left -= 1;
+                        }
                     }
-                    const rett: [] const usize = ret[0..Self.num_terms];
-                    break :blk rett;
+                    //const mask: usize = (0b1 << d) - 1;
+                    //for(bit_index..mask) |b_i| { //TODO: should i set bits more significant than the most sig blade to 1111...? it wont always overflow
+                    //    ret |= (mask << b_i);
+                    //}
+                    break :blk ret;
+                    //find the ith bit of subset at bit index b(i), set the (i * d)th bits of ret to b(i)
                 };
-                pub const us_to_mvec_indices = blk: {
-                    var ret: [Self.num_terms] usize = undefined;
-                    for(0..Self.num_terms) |i| {
-                        ret[i] = dyn[i];
-                    }
-                    const rett = ret;
-                    break :blk rett;
-                };
+                //pub const blade_to_our_idx = blk: {
 
-                terms: @Vector(dyn.len, T),
+                //};
 
-                pub fn get(self: *Self, comptime res_type: enum{stack, ptr}, blade: Blade) switch(res_type) {
-                    .stack => T, .ptr => *T,
-                    } {
-                    switch(res_type) {
+                terms: @Vector(num_terms, T),
+
+                pub fn get(self: *Self, comptime res_type: enum { stack, ptr }, blade: Blade) switch (res_type) {
+                    .stack => T,
+                    .ptr => *T,
+                } {
+                    switch (res_type) {
                         .stack => {
                             const idx: usize = @intFromEnum(blade);
                             return self.terms[idx];
@@ -970,14 +953,14 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         .ptr => {
                             const idx: usize = @intFromEnum(blade);
                             return &self.terms[idx];
-                        }, 
+                        },
                     }
                 }
 
                 pub fn zeros(self: *Self) *Self {
-                    inline for(0..Self.num_terms) |i| {
+                    inline for (0..Self.num_terms) |i| {
                         //self.get(.ptr, b).* = 0;
-                        self.terms[i] = 0.0; 
+                        self.terms[i] = 0.0;
                     }
                     return self;
                 }
@@ -995,42 +978,42 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 ) !void {
                     try writer.writeAll("Multivector: {");
                     var has_written_before: bool = false;
-                    for(0..num_terms) |i| {
+                    for (0..num_terms) |i| {
                         const term = nvec.terms[i];
-                        if(term == 0.0) {
+                        if (term == 0.0) {
                             continue;
                         }
-                        if(has_written_before == true) {
-                            _ = try writer.print(" ",.{});
-                            if(term > 0.0) {
-                                _ = try writer.print("+ ",.{});
+                        if (has_written_before == true) {
+                            _ = try writer.print(" ", .{});
+                            if (term > 0.0) {
+                                _ = try writer.print("+ ", .{});
                             }
                         }
                         has_written_before = true;
 
                         var blade_buff: [10]u8 = .{0} ** 10;
 
-                        const blade: usize = Self.us_to_mvec_indices[i];
+                        const blade: usize = (Self.our_idx_to_blade >> @truncate(d * i)) & ((0b1 << d) - 1);
 
                         var chars_needed: usize = count_bits(blade);
                         var curr_char_idx: usize = 0;
-
+                        //_ = try writer.print(" our_idx_to_blade: {b}, blade: {b}, chars: {d} ", .{ Self.our_idx_to_blade, blade, chars_needed });
 
                         _ = try writer.print("{d:.3}", .{term});
 
-                        if(chars_needed > 0) {
+                        if (chars_needed > 0) {
                             blade_buff[curr_char_idx] = 'e';
                             curr_char_idx += 1; //e
                             //var blade_copy = i;
                             var curr_bit_idx: usize = 0b1;
                             var curr_bit_char_num: usize = blk: {
-                                if(Self.Algebra.z > 0) {
+                                if (Self.Algebra.z > 0) {
                                     break :blk 0;
                                 }
                                 break :blk 1;
                             };
-                            while(chars_needed > 0) {
-                                if(i & curr_bit_idx == curr_bit_idx) {
+                            while (chars_needed > 0) {
+                                if (blade & curr_bit_idx == curr_bit_idx) {
                                     chars_needed -= 1;
                                     blade_buff[curr_char_idx] = @truncate(curr_bit_char_num + 48);
                                     curr_char_idx += 1;
@@ -1040,16 +1023,15 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             }
 
                             const slice = blade_buff[0..curr_char_idx];
-                            _ = try writer.print("{s}",.{slice});
+                            _ = try writer.print("{s}", .{slice});
                         }
-                        
                     }
                     try writer.writeAll("}");
                 }
 
                 ///returns the union of both operand type's values
-                pub fn AddResType(lhs: [] Blade, rhs: [] Blade) type {
-                    if(@inComptime() == false) {
+                pub fn AddResType(lhs: []Blade, rhs: []Blade) type {
+                    if (@inComptime() == false) {
                         @compileLog("AddResType not in comptime, dont think this should be illegal but i want to know when its true");
                     }
                     var res = [0]BasisBladeEnum{};
@@ -1064,18 +1046,17 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     //e2 = 4
                     //e02 = 5
                     //e12 = 6
-                    for(0..lhs.len + rhs.len) |_| {
+                    for (0..lhs.len + rhs.len) |_| {
                         const lb = lhs[left_idx];
                         const rb = rhs[right_idx];
                         const left_value = @intFromEnum(lb);
                         const right_value = @intFromEnum(rb);
-                        if(left_value == right_value) {
+                        if (left_value == right_value) {
                             res = res ++ .{lb};
                             //num_terms += 1;
                             left_idx += 1;
                             right_idx += 1;
-                        }
-                        else if(left_value < right_value) {
+                        } else if (left_value < right_value) {
                             res = res ++ .{lb};
                             //num_terms += 1;
                             left_idx += 1;
@@ -1090,22 +1071,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 }
 
                 pub inline fn has(comptime m_i: usize) bool {
-
-                    for(dyn) |d_i| {
-                        if(d_i == m_i) {
-                            return true;
-                        }
-                    }
-                    return false;
+                    return subset & (0b1 << m_i) != 0b0;
                 }
 
                 pub inline fn redirect(comptime m_i: usize) usize {
-                    for(dyn, 0..) |d_i, us| {
-                        if(d_i == m_i) {
-                            return us;
-                        }
+                    comptime {
+                        return count_bits(((0b1 << m_i) - 1) & subset);
                     }
-                    unreachable;
                 }
 
                 pub inline fn set_redirect(self: *Self, comptime m_i: usize, value: T) void {
@@ -1116,30 +1088,34 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return self.terms[Self.redirect(m_i)];
                 }
 
-                pub fn mvec_index(comptime int: usize) usize {
-                    return Self.us_to_mvec_indices[int];
+                pub fn mvec_index(comptime i: usize) usize {
+                    comptime {
+                        return (our_idx_to_blade >> i) & ((0b1 << d) - 1);
+                    }
                 }
 
                 pub fn add(lhs: anytype, lhs_type: type, rhs: anytype, rhs_type: type, ret_ptr: anytype, ret_type: type) *ret_type {
                     //if((@hasField(left_type, "Blades") == false or @hasField(right_type, "Blades") == false)) {
                     //    @compileError("YOU CANT JUST PASS ANYTHING INTO ADD()");
                     //}
-
-                    inline for(0..ret_type.num_terms) |i| {
-                        const mvec_idx = comptime blk: {break :blk ret_type.mvec_index(i);};
-                        if(lhs_type.has(mvec_idx)) {
-                            if(rhs_type.has(mvec_idx)) {
+                    //ret_ptr.terms =
+                    inline for (0..ret_type.num_terms) |i| {
+                        const mvec_idx = comptime blk: {
+                            break :blk ret_type.mvec_index(i);
+                        };
+                        if (lhs_type.has(mvec_idx)) {
+                            if (rhs_type.has(mvec_idx)) {
                                 ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx) + rhs.get_redirect(mvec_idx));
                             } else {
                                 ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx));
                             }
                         } else {
-                            if(rhs_type.has(mvec_idx)) {
+                            if (rhs_type.has(mvec_idx)) {
                                 ret_ptr.set_redirect(mvec_idx, rhs.get_redirect(mvec_idx));
                             }
                         }
                         //check if lhs or rhs have the given field value, and if they do do the add. if they dont then continue
-                        //we need a way of comparing 
+                        //we need a way of comparing
                         //result.terms[i] = lhs.terms[i] + rhs.terms[i];
                     }
                     return ret_ptr;
@@ -1147,12 +1123,12 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn sub(lhs: *Self, rhs: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
-                    inline for(0..num_terms) |i| {
+                    inline for (0..num_terms) |i| {
                         result.*.terms[i] = lhs.*.terms[i] - rhs.*.terms[i];
                     }
                     return result;
@@ -1160,34 +1136,39 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn mul_scalar(nvec: *Self, scalar: anytype, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
-                    for(0..num_terms) |i| {
+                    for (0..num_terms) |i| {
                         result.terms[i] = nvec.terms[i] * scalar;
                     }
                     return result;
                 }
-                
 
                 pub fn gp(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
-                    inline for(0..Self.num_terms) |res_blade| {//find every mult pair that produces this blade
-                        inner: inline for(0..Self.num_terms) |prod_idx| {
-                            const val = comptime blk: {break :blk gp_inverse[res_blade][prod_idx].mult;};
-                            const lhs = comptime blk: {break :blk gp_inverse[res_blade][prod_idx].left_blade;};
-                            const rhs = comptime blk: {break :blk gp_inverse[res_blade][prod_idx].right_blade;};
+                    inline for (0..Self.num_terms) |res_blade| { //find every mult pair that produces this blade
+                        inner: inline for (0..Self.num_terms) |prod_idx| {
+                            const val = comptime blk: {
+                                break :blk gp_inverse[res_blade][prod_idx].mult;
+                            };
+                            const lhs = comptime blk: {
+                                break :blk gp_inverse[res_blade][prod_idx].left_blade;
+                            };
+                            const rhs = comptime blk: {
+                                break :blk gp_inverse[res_blade][prod_idx].right_blade;
+                            };
 
                             comptime {
-                                if(lhs > Self.num_terms or rhs > Self.num_terms) {
+                                if (lhs > Self.num_terms or rhs > Self.num_terms) {
                                     break :inner;
                                 }
                             }
@@ -1201,16 +1182,18 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn gp_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
-                    inline for(0..Self.Algebra.basis_len) |lhs| {
-                        inline for(0..Self.Algebra.basis_len) |rhs| {
-                            if(Self.Algebra.mask_zero & lhs & rhs == 0) { //should be collapsed at comptime
-                                const cayley_elem = comptime blk: { break :blk Self.Algebra.gp_cayley[lhs][rhs];};
+                    inline for (0..Self.Algebra.basis_len) |lhs| {
+                        inline for (0..Self.Algebra.basis_len) |rhs| {
+                            if (Self.Algebra.mask_zero & lhs & rhs == 0) { //should be collapsed at comptime
+                                const cayley_elem = comptime blk: {
+                                    break :blk Self.Algebra.gp_cayley[lhs][rhs];
+                                };
                                 result.terms[cayley_elem.blade] += cayley_elem.value * left.terms[lhs] * right.terms[rhs];
                             }
                         }
@@ -1218,28 +1201,26 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-
-
                 pub fn gp_better(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
                     //inline for(0..Self.Algebra.basis_len) |blade| {
                     //    var val: f64 = 0;
-                        //2 ({us, 0000} * 2) + 2 ** (d - count_bits(blade))
-                        //degenerate indices can be created from 2 ** d total basis blade pairs,
-                        //non degenerate indices seem to have half as many? 1 / 2 ** num_degen_bases as many?
-                        //we want to find every pair of indices that xor into us
+                    //2 ({us, 0000} * 2) + 2 ** (d - count_bits(blade))
+                    //degenerate indices can be created from 2 ** d total basis blade pairs,
+                    //non degenerate indices seem to have half as many? 1 / 2 ** num_degen_bases as many?
+                    //we want to find every pair of indices that xor into us
                     //    inline for(blade..Self.Algebra.basis_len) |lhs
                     //}
 
-                    inline for(0..Self.Algebra.basis_len) |lhs| {
-                        inline for(0..Self.Algebra.basis_len) |rhs| {
-                            if(Self.Algebra.mask_zero & lhs & rhs == 0) { 
+                    inline for (0..Self.Algebra.basis_len) |lhs| {
+                        inline for (0..Self.Algebra.basis_len) |rhs| {
+                            if (Self.Algebra.mask_zero & lhs & rhs == 0) {
                                 const squares: isize = lhs & rhs;
                                 const flips = count_flips(lhs, rhs);
                                 const value: isize = -2 * (((squares & Self.Algebra.mask_neg) ^ @as(isize, @intCast(flips))) & 1) + 1;
@@ -1251,18 +1232,17 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-
                 pub fn gp_not_unrolled(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
-                    for(0..Self.Algebra.basis_len) |lhs| {
-                        for(0..Self.Algebra.basis_len) |rhs| {
-                            if(Self.Algebra.mask_zero & lhs & rhs == 0) { //should be collapsed at comptime
+                    for (0..Self.Algebra.basis_len) |lhs| {
+                        for (0..Self.Algebra.basis_len) |rhs| {
+                            if (Self.Algebra.mask_zero & lhs & rhs == 0) { //should be collapsed at comptime
                                 const cayley_elem = Self.Algebra.gp_cayley[lhs][rhs];
                                 result.terms[cayley_elem.blade] += @as(T, @floatFromInt(cayley_elem.value)) * left.terms[lhs] * right.terms[rhs];
                             }
@@ -1273,16 +1253,18 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn op(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
-                    inline for(0..Self.Algebra.basis_len) |lhs| {
-                        inline for(0..Self.Algebra.basis_len) |rhs| {
-                            if(lhs & rhs == 0) {
-                                const cayley_elem = comptime blk: { break :blk Self.Algebra.op_cayley[lhs][rhs];};
+                    inline for (0..Self.Algebra.basis_len) |lhs| {
+                        inline for (0..Self.Algebra.basis_len) |rhs| {
+                            if (lhs & rhs == 0) {
+                                const cayley_elem = comptime blk: {
+                                    break :blk Self.Algebra.op_cayley[lhs][rhs];
+                                };
                                 result.terms[cayley_elem.blade] += cayley_elem.value * left.terms[lhs] * right.terms[rhs];
                             }
                         }
@@ -1291,19 +1273,20 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-
                 pub fn ip(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
-                    inline for(0..Self.Algebra.basis_len) |lhs| {
-                        inline for(0..Self.Algebra.basis_len) |rhs| {
-                            if(Self.Algebra.mask_zero & lhs & rhs == 0) { //should be collapsed at comptime
-                                const cayley_elem = comptime blk: { break :blk Self.Algebra.ip_cayley[lhs][rhs];};
+                    inline for (0..Self.Algebra.basis_len) |lhs| {
+                        inline for (0..Self.Algebra.basis_len) |rhs| {
+                            if (Self.Algebra.mask_zero & lhs & rhs == 0) { //should be collapsed at comptime
+                                const cayley_elem = comptime blk: {
+                                    break :blk Self.Algebra.ip_cayley[lhs][rhs];
+                                };
                                 result.terms[cayley_elem.blade] += cayley_elem.value * left.terms[lhs] * right.terms[rhs];
                             }
                         }
@@ -1331,15 +1314,17 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn rp(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
-                    inline for(0..Self.Algebra.basis_len) |lhs| {
-                        inline for(0..Self.Algebra.basis_len) |rhs| {
-                            const cayley_elem = comptime blk: { break :blk Self.Algebra.rp_cayley[lhs][rhs];};
+                    inline for (0..Self.Algebra.basis_len) |lhs| {
+                        inline for (0..Self.Algebra.basis_len) |rhs| {
+                            const cayley_elem = comptime blk: {
+                                break :blk Self.Algebra.rp_cayley[lhs][rhs];
+                            };
                             result.terms[cayley_elem.blade] += cayley_elem.value * left.terms[lhs] * right.terms[rhs];
                         }
                     }
@@ -1349,13 +1334,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn grade_project(self: *Self, grade: usize, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = comptime blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
-                    inline for(0..Self.Algebra.basis_len) |i| {
-                        if(count_bits(i) == grade) { //theres a better way to do this, the next elem of the same grade is 2^ith indices next
+                    inline for (0..Self.Algebra.basis_len) |i| {
+                        if (count_bits(i) == grade) { //theres a better way to do this, the next elem of the same grade is 2^ith indices next
                             result.terms[i] = self.terms[i];
                         } else {
                             result.terms[i] = 0.0;
@@ -1364,20 +1349,19 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-
                 pub fn reverse(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = comptime blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
-                    inline for(0..Self.Algebra.basis_len) |i| {
+                    inline for (0..Self.Algebra.basis_len) |i| {
                         const mult: T = comptime blk: {
                             var x: usize = i & ~1;
                             x /= 2;
-                            if(x & 1 == 0) {
+                            if (x & 1 == 0) {
                                 break :blk 1.0;
                             }
                             break :blk -1.0;
@@ -1389,13 +1373,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn dual(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = comptime blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
-                    inline for(0..Self.Algebra.basis_len) |i| {
+                    inline for (0..Self.Algebra.basis_len) |i| {
                         result.terms[i] = self.terms[Self.Algebra.basis_len - 1 - i];
                     }
                     return result;
@@ -1403,15 +1387,15 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn involution(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = comptime blk: {
-                        switch(res_type) {
+                        switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
+                            .ptr => break :blk res_data.ptr,
                         }
                     };
 
-                    inline for(0..Self.Algebra.basis_len) |i| {
+                    inline for (0..Self.Algebra.basis_len) |i| {
                         const mult: T = comptime blk: {
-                            if(i & 1 == 0) {
+                            if (i & 1 == 0) {
                                 break :blk -1.0;
                             }
                             break :blk 1.0;
@@ -1420,7 +1404,6 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     }
                     return result;
                 }
-
 
                 //pub fn norm(self: Self) -> Scalar {
                 //    let scalar_part = (self * self.Conjugate())[0];
@@ -1431,11 +1414,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 pub fn magnitude_squared(self: *Self) T {
                     @setEvalBranchQuota(100000);
                     var scalar: T = 0;
-                    inline for(0..Self.Algebra.basis_len) |lhs| {
-                        inline for(0..Self.Algebra.basis_len) |rhs| {
+                    inline for (0..Self.Algebra.basis_len) |lhs| {
+                        inline for (0..Self.Algebra.basis_len) |rhs| {
                             //we only want to consider the blades that result in a scalar
-                            if(Self.Algebra.mask_zero & lhs & rhs == 0 and lhs ^ rhs == 0) { //should be collapsed at comptime
-                                const cayley_elem = comptime blk: { break :blk Self.Algebra.gp_cayley[lhs][rhs];};
+                            if (Self.Algebra.mask_zero & lhs & rhs == 0 and lhs ^ rhs == 0) { //should be collapsed at comptime
+                                const cayley_elem = comptime blk: {
+                                    break :blk Self.Algebra.gp_cayley[lhs][rhs];
+                                };
                                 scalar += cayley_elem.value * self.terms[rhs] * self.terms[lhs];
                             }
                         }
@@ -1451,30 +1436,30 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 pub fn normalize(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     return self.mul_scalar(1.0 / self.magnitude(), res_type, res_data);
                 }
-
             };
             return ret;
         }
 
-        pub fn to_indices(enum_slice: []const BasisBladeEnum) [] const usize {
-            var ret: [enum_slice.len] usize = undefined;
-            for(enum_slice, 0..) |e, i| {
-                ret[i] = @intFromEnum(e);
+        pub fn enums_to_subset(enum_slice: []const BasisBladeEnum) usize {
+            var ret: usize = 0b0;
+            for (enum_slice) |e| {
+                ret |= (0b1 << @intFromEnum(e));
             }
-            return ret[0..ret.len];
+            return ret;
         }
 
-        pub const NVec = MVecSubset(&(.{1} ** basis_len));
+        pub const NVec = MVecSubset(enums_to_subset(&BasisBlades));
         pub const Plane = blk: {
-            if(p == 3 and z == 1 and n == 0) {// pga
-                break :blk MVecSubset(&.{0b0001,0b0010,0b0100,0b1000});
+            if (p == 3 and z == 1 and n == 0) { // pga
+                break :blk MVecSubset(0b10010110); //&.{0b0001,0b0010,0b0100,0b1000});
             }
             break :blk void;
         };
         pub const Motor = blk: {
-            if(p == 3 and z == 1 and n == 0) {
+            if (p == 3 and z == 1 and n == 0) {
+                //@compileLog("0b1011001101001: ", 0b1011001101001, "enums_to_subset(&.{.s,.e01,.e02,.e03,.e12,.e13,.e23}): ", enums_to_subset(&.{.s,.e01,.e02,.e03,.e12,.e13,.e23}));
                 //s,e01,e02,e03,e12,e13,e23
-                break :blk MVecSubset(&.{0,0b0011,0b0101,0b1001, 0b0110,0b1100});
+                break :blk MVecSubset(0b1011001101001); //&.{0,0b0011,0b0101,0b1001, 0b0110,0b1100});
             }
             break :blk void;
         };
