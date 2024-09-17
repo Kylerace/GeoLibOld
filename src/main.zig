@@ -9,7 +9,7 @@ pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
     //try stdout.print("test");
     @setEvalBranchQuota(10000000);
-    const alg = Algebra(5,0,0);
+    const alg = Algebra(3,0,1, f64);
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     const allocator = arena.allocator();
     defer _ = arena.deinit();
@@ -54,7 +54,7 @@ pub fn main() !void {
     //51: .LBB5_69
     _=third.zeros();
     
-    _=fst.gp(snd, .ptr, .{.ptr=third}).add(fst, .ptr, .{.ptr=third});
+    //_=fst.gp(snd, .ptr, .{.ptr=third}).add(fst, .ptr, .{.ptr=third});
 
     try stdout.print("{} gp {} + {} = {}\n", .{fst, snd, fst, third});
     //57: .LBB5_79: same add, same commands but slightly different offsets
@@ -78,7 +78,20 @@ pub fn main() !void {
 
     //try stdout.print("\nfst.get(.e3) after changing = {d}", .{fst.get(.stack, .e3)});
 
-
+    const Motor = alg.Motor;
+    const mtr: *Motor = try allocator.create(Motor);
+    _=mtr.zeros();
+    mtr.terms[0] = 1.0;
+    mtr.terms[1] = 2.3;
+    mtr.terms[2] = 0.21;
+    mtr.terms[3] = 1.5;
+    const add_res: *NVec = try allocator.create(NVec);
+    _=add_res.zeros();
+    fst.get(.ptr, .e0).* = 1.2;
+    fst.get(.ptr, .e1).* = 0.17;
+    fst.get(.ptr, .e2).* = 31.4;
+    fst.get(.ptr, .e3).* = 15.6;
+    try stdout.print("motor terms length {}, motor {} + mvec {} = {}", .{Motor.num_terms, mtr, add_res, mtr.add( Motor, fst, NVec, add_res, NVec)});
 
 }
 
@@ -335,7 +348,7 @@ fn even_parity(field: usize, comptime d: comptime_int) usize {
     return (0x6996 >> field) & 1;
 }
 
-fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
+fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime T: type) type {
     const _d: usize = _p + _n + _z;
     const basis_size: usize = std.math.pow(usize, 2, _d);
 
@@ -386,7 +399,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
     };
 
     const ProdTerm = struct {
-        mult: f64,
+        mult: T,
         left_blade: usize,
         right_blade: usize
     };
@@ -500,6 +513,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
     const _neg_mask = neg_mask;
     const alg = struct {
         pub const Alg = @This();
+        pub const D = T;
         pub const p: usize = _p;
         pub const n: usize = _n;
         pub const z: usize = _z;
@@ -658,7 +672,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
         //pub const TableFormat = []RowFormat;
 
         fn cayley_printer(element: BinBlade, current_slice: []u8, fmt: RowFormat) void {
-            const mid_slice = @as(usize, @as(usize, @intFromFloat(std.math.ceil(@as(f64, @floatFromInt(current_slice.len)) / 2.0))))-1;
+            const mid_slice = @as(usize, @as(usize, @intFromFloat(std.math.ceil(@as(T, @floatFromInt(current_slice.len)) / 2.0))))-1;
             for(0..current_slice.len) |i| {
                 current_slice[i] = ' ';
             }
@@ -879,7 +893,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
         //}
 
 
-        pub fn MVecSubset(comptime dyn: [] const BasisBladeEnum) type {
+        pub fn MVecSubset(comptime dyn: [] const usize) type {
 
             //Naive (Multi) Vector - full basis_size elements
             const ret = struct {
@@ -897,23 +911,56 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                 pub const name = [_]u8{"Multivector"};
 
         
-                //pub const unbroken_range: bool = true; ?
-                pub const num_terms: usize = Self.Algebra.basis_len;
+                pub const unbroken_range: bool = blk: {
+                    break :blk if(dyn.len == Self.basis_len) true else blk2: {
+                    var last_enum = @intFromEnum(dyn[0]);
+                    if(dyn.len > 1) {
+                        for(1..dyn.len) |i| {
+                            const x = @intFromEnum(dyn[i]);
+                            if(x != last_enum + 1) {
+                                break :blk2 false;
+                            }
+                            last_enum = x;
+                        }
+                        break :blk2 false;
+                    } else {
+                        break :blk2 true;
+                    }
+                };};
+
+
+                pub const num_terms: usize = dyn.len;
 
                 ///when converted to MVecSubset this MUST only contain the blades specific to this instance
                 pub const Blade: type = Self.Algebra.BasisBladeEnum;
-                pub const Blades: [num_terms]Blade = blk: {
-                    var ret: [basis_size]BasisBladeEnum = undefined;
-                    for(0..basis_size) |i| {
-                        ret[i] = @enumFromInt(i);
+                //pub const Blades: [num_terms]Blade = blk: {
+                //    var ret: [num_terms]Blade = undefined;
+                //    for(0..dyn.len) |i| {
+                //        ret[i] = dyn[i];
+                //    }
+                //    break :blk ret;
+                //};
+                pub const indices = blk: {
+                    var ret: [Self.num_terms] usize = undefined;
+                    for(0..Self.num_terms) |i| {
+                        ret[i] = dyn[i];
                     }
-                    break :blk ret;
+                    const rett: [] const usize = ret[0..Self.num_terms];
+                    break :blk rett;
+                };
+                pub const us_to_mvec_indices = blk: {
+                    var ret: [Self.num_terms] usize = undefined;
+                    for(0..Self.num_terms) |i| {
+                        ret[i] = dyn[i];
+                    }
+                    const rett = ret;
+                    break :blk rett;
                 };
 
-                terms: [dyn.len]f64,
+                terms: @Vector(dyn.len, T),
 
                 pub fn get(self: *Self, comptime res_type: enum{stack, ptr}, blade: Blade) switch(res_type) {
-                    .stack => f64, .ptr => *f64,
+                    .stack => T, .ptr => *T,
                     } {
                     switch(res_type) {
                         .stack => {
@@ -928,8 +975,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                 }
 
                 pub fn zeros(self: *Self) *Self {
-                    for(Self.Blades) |b| {
-                        self.get(.ptr, b).* = 0;
+                    inline for(0..Self.num_terms) |i| {
+                        //self.get(.ptr, b).* = 0;
+                        self.terms[i] = 0.0; 
                     }
                     return self;
                 }
@@ -940,14 +988,14 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                 }
 
                 pub fn format(
-                    nvec: NVec,
+                    nvec: Self,
                     comptime _: []const u8,
                     _: std.fmt.FormatOptions,
                     writer: anytype,
                 ) !void {
                     try writer.writeAll("Multivector: {");
                     var has_written_before: bool = false;
-                    for(0..Self.Algebra.basis_len) |i| {
+                    for(0..num_terms) |i| {
                         const term = nvec.terms[i];
                         if(term == 0.0) {
                             continue;
@@ -961,7 +1009,10 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                         has_written_before = true;
 
                         var blade_buff: [10]u8 = .{0} ** 10;
-                        var chars_needed: usize = count_bits(i);
+
+                        const blade: usize = Self.us_to_mvec_indices[i];
+
+                        var chars_needed: usize = count_bits(blade);
                         var curr_char_idx: usize = 0;
 
 
@@ -996,17 +1047,102 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                     try writer.writeAll("}");
                 }
 
-                pub fn add(lhs: *Self, rhs: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch(res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr =>  break :blk res_data.ptr
-                        }
-                    };
-                    inline for(0..Self.Algebra.basis_len) |i| {
-                        result.terms[i] = lhs.terms[i] + rhs.terms[i];
+                ///returns the union of both operand type's values
+                pub fn AddResType(lhs: [] Blade, rhs: [] Blade) type {
+                    if(@inComptime() == false) {
+                        @compileLog("AddResType not in comptime, dont think this should be illegal but i want to know when its true");
                     }
-                    return result;
+                    var res = [0]BasisBladeEnum{};
+                    //var num_terms = 0;
+                    var left_idx = 0;
+                    var right_idx = 0;
+                    //make the assumption that all enum lists are in ascending order
+                    //s = 0, s
+                    //e0 = 1, e0,
+                    //e1 = 2, e02,
+                    //e01 = 3, e12,
+                    //e2 = 4
+                    //e02 = 5
+                    //e12 = 6
+                    for(0..lhs.len + rhs.len) |_| {
+                        const lb = lhs[left_idx];
+                        const rb = rhs[right_idx];
+                        const left_value = @intFromEnum(lb);
+                        const right_value = @intFromEnum(rb);
+                        if(left_value == right_value) {
+                            res = res ++ .{lb};
+                            //num_terms += 1;
+                            left_idx += 1;
+                            right_idx += 1;
+                        }
+                        else if(left_value < right_value) {
+                            res = res ++ .{lb};
+                            //num_terms += 1;
+                            left_idx += 1;
+                        } else {
+                            res = res ++ .{rb};
+                            //num_terms += 1;
+                            right_idx += 1;
+                        }
+                    }
+                    const ret: []const BasisBladeEnum = res[0..res.len];
+                    return Self.Algebra.MVecSubset(ret);
+                }
+
+                pub inline fn has(comptime m_i: usize) bool {
+
+                    for(dyn) |d_i| {
+                        if(d_i == m_i) {
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+
+                pub inline fn redirect(comptime m_i: usize) usize {
+                    for(dyn, 0..) |d_i, us| {
+                        if(d_i == m_i) {
+                            return us;
+                        }
+                    }
+                    unreachable;
+                }
+
+                pub inline fn set_redirect(self: *Self, comptime m_i: usize, value: T) void {
+                    self.terms[Self.redirect(m_i)] = value;
+                }
+
+                pub inline fn get_redirect(self: *Self, comptime m_i: usize) T {
+                    return self.terms[Self.redirect(m_i)];
+                }
+
+                pub fn mvec_index(comptime int: usize) usize {
+                    return Self.us_to_mvec_indices[int];
+                }
+
+                pub fn add(lhs: anytype, lhs_type: type, rhs: anytype, rhs_type: type, ret_ptr: anytype, ret_type: type) *ret_type {
+                    //if((@hasField(left_type, "Blades") == false or @hasField(right_type, "Blades") == false)) {
+                    //    @compileError("YOU CANT JUST PASS ANYTHING INTO ADD()");
+                    //}
+
+                    inline for(0..ret_type.num_terms) |i| {
+                        const mvec_idx = comptime blk: {break :blk ret_type.mvec_index(i);};
+                        if(lhs_type.has(mvec_idx)) {
+                            if(rhs_type.has(mvec_idx)) {
+                                ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx) + rhs.get_redirect(mvec_idx));
+                            } else {
+                                ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx));
+                            }
+                        } else {
+                            if(rhs_type.has(mvec_idx)) {
+                                ret_ptr.set_redirect(mvec_idx, rhs.get_redirect(mvec_idx));
+                            }
+                        }
+                        //check if lhs or rhs have the given field value, and if they do do the add. if they dont then continue
+                        //we need a way of comparing 
+                        //result.terms[i] = lhs.terms[i] + rhs.terms[i];
+                    }
+                    return ret_ptr;
                 }
 
                 pub fn sub(lhs: *Self, rhs: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
@@ -1016,7 +1152,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                             .ptr =>  break :blk res_data.ptr
                         }
                     };
-                    inline for(0..Self.Algebra.basis_len) |i| {
+                    inline for(0..num_terms) |i| {
                         result.*.terms[i] = lhs.*.terms[i] - rhs.*.terms[i];
                     }
                     return result;
@@ -1029,7 +1165,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                             .ptr =>  break :blk res_data.ptr
                         }
                     };
-                    for(0..Self.Algebra.basis_len) |i| {
+                    for(0..num_terms) |i| {
                         result.terms[i] = nvec.terms[i] * scalar;
                     }
                     return result;
@@ -1108,7 +1244,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                                 const flips = count_flips(lhs, rhs);
                                 const value: isize = -2 * (((squares & Self.Algebra.mask_neg) ^ @as(isize, @intCast(flips))) & 1) + 1;
                                 const gp_blade: usize = lhs ^ rhs;
-                                result.terms[gp_blade] += @as(f64, @floatFromInt(value)) * left.terms[lhs] * right.terms[rhs];
+                                result.terms[gp_blade] += @as(T, @floatFromInt(value)) * left.terms[lhs] * right.terms[rhs];
                             }
                         }
                     }
@@ -1128,7 +1264,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                         for(0..Self.Algebra.basis_len) |rhs| {
                             if(Self.Algebra.mask_zero & lhs & rhs == 0) { //should be collapsed at comptime
                                 const cayley_elem = Self.Algebra.gp_cayley[lhs][rhs];
-                                result.terms[cayley_elem.blade] += @as(f64, @floatFromInt(cayley_elem.value)) * left.terms[lhs] * right.terms[rhs];
+                                result.terms[cayley_elem.blade] += @as(T, @floatFromInt(cayley_elem.value)) * left.terms[lhs] * right.terms[rhs];
                             }
                         }
                     }
@@ -1238,7 +1374,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                     };
 
                     inline for(0..Self.Algebra.basis_len) |i| {
-                        const mult: f64 = comptime blk: {
+                        const mult: T = comptime blk: {
                             var x: usize = i & ~1;
                             x /= 2;
                             if(x & 1 == 0) {
@@ -1274,7 +1410,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                     };
 
                     inline for(0..Self.Algebra.basis_len) |i| {
-                        const mult: f64 = comptime blk: {
+                        const mult: T = comptime blk: {
                             if(i & 1 == 0) {
                                 break :blk -1.0;
                             }
@@ -1292,9 +1428,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                 //    scalar_part.abs().sqrt()
                 //} we need gp with reverse
 
-                pub fn magnitude_squared(self: *Self) f64 {
+                pub fn magnitude_squared(self: *Self) T {
                     @setEvalBranchQuota(100000);
-                    var scalar: f64 = 0;
+                    var scalar: T = 0;
                     inline for(0..Self.Algebra.basis_len) |lhs| {
                         inline for(0..Self.Algebra.basis_len) |rhs| {
                             //we only want to consider the blades that result in a scalar
@@ -1308,7 +1444,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
                     return scalar;
                 }
 
-                pub fn magnitude(self: *Self) f64 {
+                pub fn magnitude(self: *Self) T {
                     return @sqrt(@abs(self.magnitude_squared()));
                 }
 
@@ -1320,7 +1456,28 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
             return ret;
         }
 
-        pub const NVec = MVecSubset(BasisBlades[0..basis_size]);
+        pub fn to_indices(enum_slice: []const BasisBladeEnum) [] const usize {
+            var ret: [enum_slice.len] usize = undefined;
+            for(enum_slice, 0..) |e, i| {
+                ret[i] = @intFromEnum(e);
+            }
+            return ret[0..ret.len];
+        }
+
+        pub const NVec = MVecSubset(&(.{1} ** basis_len));
+        pub const Plane = blk: {
+            if(p == 3 and z == 1 and n == 0) {// pga
+                break :blk MVecSubset(&.{0b0001,0b0010,0b0100,0b1000});
+            }
+            break :blk void;
+        };
+        pub const Motor = blk: {
+            if(p == 3 and z == 1 and n == 0) {
+                //s,e01,e02,e03,e12,e13,e23
+                break :blk MVecSubset(&.{0,0b0011,0b0101,0b1001, 0b0110,0b1100});
+            }
+            break :blk void;
+        };
     };
 
     return alg;
