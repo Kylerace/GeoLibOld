@@ -5,9 +5,17 @@ const time = std.time;
 const Timer = time.Timer;
 const Random = std.Random;
 const comptimePrint = std.fmt.comptimePrint;
+const BoundedArray = std.BoundedArray;
+const meta = std.meta;
+
+const builtin = @import("builtin");
 
 pub fn main() !void {
     const stdout = std.io.getStdOut().writer();
+
+    //const target = std.Target.zigTriple(target: Target, allocator: Allocator)
+    //try stdout.print("")
+
     //try stdout.print("test");
     @setEvalBranchQuota(10000000);
     const alg = Algebra(3, 0, 1, f64);
@@ -49,7 +57,7 @@ pub fn main() !void {
     snd.terms[0b1001] = 2.3;
 
     const third: *NVec = obj_pool[2].zeros();
-    _ = fst.gp(snd, .ptr, .{ .ptr = third });
+    _ = fst.gp(snd, third);
 
     try stdout.print("{} gp {} = {}\n", .{ fst, snd, third });
     //51: .LBB5_69
@@ -92,30 +100,56 @@ pub fn main() !void {
     fst.get(.ptr, .e1).* = 0.17;
     fst.get(.ptr, .e2).* = 31.4;
     fst.get(.ptr, .e3).* = 15.6;
-    try stdout.print("\nmotor terms length {}, motor {} + mvec {} = {}", .{ Motor.num_terms, mtr, fst, Motor.add(mtr, Motor, fst, NVec, add_res, NVec) });
+    try stdout.print("\nmotor terms length {}, motor {} + mvec {} = {}", .{ Motor.num_terms, mtr, fst, Motor.add(Motor, mtr, NVec, fst, NVec, add_res) });
 
     try stdout.print("\nNVec subset: {b}, our_idx_to_blade: {b}", .{ NVec.subset_field, NVec.our_idx_to_blade });
     try stdout.print("\nMotor subset: {b}, our_idx_to_blade: {b}", .{ Motor.subset_field, Motor.our_idx_to_blade });
+
+    //try benchmark(stdout, allocator);
+
+    const gp_res: *NVec = try allocator.create(NVec);
+    _ = gp_res.zeros();
+
+    const op_l: *NVec = try allocator.create(NVec);
+    _ = op_l.zeros();
+
+    op_l.terms[3] = 1.235;
+    op_l.terms[5] = -5.1;
+
+    const op_r: *NVec = try allocator.create(NVec);
+    _ = op_r.zeros();
+
+    op_r.terms[1] = 3.12;
+    op_r.terms[3] = 4.2;
+    op_r.terms[6] = -2.1;
+
+    //NVec.gp_op(fst, snd, gp_res);
+    //const xie = std.builtin.CallModifier;
+    @call(.never_inline, NVec.gp, .{ op_l, op_r, gp_res });
+    try stdout.print("\ngp op: {} * {} = {}", .{ op_l, op_r, gp_res });
+
+    try benchmark(stdout, allocator);
 }
 
-pub fn benchmark(stdout: anytype, allocator: Allocator) void {
+pub fn benchmark(stdout: anytype, allocator: Allocator) !void {
     var gp_normal_avg_throughput: f128 = 0.0;
-    var gp_get_avg_throughput: f128 = 0.0;
     var gp_better_avg_throughput: f128 = 0.0;
     var gp_rolled_avg_throughput: f128 = 0.0;
+    var gp_inv_avg_throughput: f128 = 0.0;
+
     var gp_normal_iters: u128 = 0;
-    var gp_get_iters: u128 = 0;
     var gp_better_iters: u128 = 0;
     var gp_rolled_iters: u128 = 0;
+    var gp_inv_iters: u128 = 0;
 
-    const length_milliseconds = 250;
+    const length_milliseconds = 200;
 
     const max_p = 5;
 
     const algs: [max_p]type = comptime blk: {
         var algies: [max_p]type = undefined;
         for (1..max_p + 1) |i| {
-            algies[i - 1] = Algebra(i, 0, 1);
+            algies[i - 1] = Algebra(i, 0, 1, f64);
         }
         break :blk algies;
     };
@@ -130,9 +164,9 @@ pub fn benchmark(stdout: anytype, allocator: Allocator) void {
 
     inline for (1..max_p + 1) |p| {
         gp_normal_avg_throughput = 0.0;
-        gp_get_avg_throughput = 0.0;
         gp_better_avg_throughput = 0.0;
         gp_rolled_avg_throughput = 0.0;
+        gp_inv_avg_throughput = 0.0;
 
         //const alg2 = algs[p-1];
         const nvec = nvecs[p - 1];
@@ -145,21 +179,7 @@ pub fn benchmark(stdout: anytype, allocator: Allocator) void {
                 for (0..50) |_| {
                     for (0..perf_pool.len) |j| {
                         const m = &perf_pool[j];
-                        _ = m.gp_get(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{ .ptr = &perf_pool[(j -% 1) % perf_pool.len] });
-                    }
-                }
-                gp_get_iters += 1;
-            }
-
-            gp_get_avg_throughput = 0.5 * gp_get_avg_throughput + 0.5 * @as(f128, @floatFromInt(gp_get_iters)) * 50.0 * @as(f128, @floatFromInt(perf_pool.len)) / @as(f128, @floatFromInt(length_milliseconds));
-            gp_get_iters = 0;
-            timer.reset();
-
-            while (timer.read() / 1_000_000 < length_milliseconds) {
-                for (0..50) |_| {
-                    for (0..perf_pool.len) |j| {
-                        const m = &perf_pool[j];
-                        _ = m.gp(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{ .ptr = &perf_pool[(j -% 1) % perf_pool.len] });
+                        _ = m.gp(&perf_pool[(j + 1) % perf_pool.len], &perf_pool[(j -% 1) % perf_pool.len]);
                     }
                 }
                 gp_normal_iters += 1;
@@ -197,10 +217,30 @@ pub fn benchmark(stdout: anytype, allocator: Allocator) void {
             gp_rolled_avg_throughput = 0.5 * gp_rolled_avg_throughput + 0.5 * @as(f128, @floatFromInt(gp_rolled_iters)) * 50.0 * @as(f128, @floatFromInt(perf_pool.len)) / @as(f128, @floatFromInt(length_milliseconds));
             gp_rolled_iters = 0;
             timer.reset();
+
+            while (timer.read() / 1_000_000 < length_milliseconds) {
+                for (0..50) |_| {
+                    for (0..perf_pool.len) |j| {
+                        const m = &perf_pool[j];
+
+                        _ = m.gp_inv(&perf_pool[(j + 1) % perf_pool.len], .ptr, .{ .ptr = &perf_pool[(j -% 1) % perf_pool.len] });
+                    }
+                }
+                gp_inv_iters += 1;
+            }
+
+            gp_inv_avg_throughput = 0.5 * gp_inv_avg_throughput + 0.5 * @as(f128, @floatFromInt(gp_inv_iters)) * 50.0 * @as(f128, @floatFromInt(perf_pool.len)) / @as(f128, @floatFromInt(length_milliseconds));
+            gp_inv_iters = 0;
+            timer.reset();
         }
 
-        try stdout.print("\nalgebra({},0,1): gp() got {:.4} avg calls / ms, reordered gp() got {:.4} avg calls / ms, no lookup table gp() got {:.4} avg calls / ms, non inlined gp() got {:.4} avg calls / ms", .{ p, gp_normal_avg_throughput, gp_get_avg_throughput, gp_better_avg_throughput, gp_rolled_avg_throughput });
+        try stdout.print("\nalgebra({},0,1): sparse vectorized gp() got {:.4} avg calls / ms, unrolled reordered gp() got {:.4} avg calls / ms, unrolled (no table lookup) gp_better() got {:.4} avg calls / ms, non inlined (w/ table lookup) gp_rolled() got {:.4} avg calls / ms", .{ p, gp_normal_avg_throughput, gp_inv_avg_throughput, gp_better_avg_throughput, gp_rolled_avg_throughput });
+        //return;
     }
+}
+
+inline fn is_comptime(val: anytype) bool {
+    return @typeInfo(@TypeOf(.{val})).Struct.fields[0].is_comptime;
 }
 
 pub fn factorial(n: anytype) @TypeOf(n) {
@@ -262,17 +302,91 @@ pub fn cycle_sort_ret_writes(T: anytype, slice: []T) usize {
     return cycle_elements - cycles;
 }
 
-fn count_bits(v: usize) usize {
+fn count_bits(v: anytype) @TypeOf(v) {
     var val = v;
-    var count: usize = 0;
+    var count: @TypeOf(v) = 0;
     //var parity: bool = false;
     while (val != 0) {
         //parity = !parity;
         count += 1;
         val &= val - 1;
     }
+    //var t = v >> 1;
+    //t ^= t >> 1;
+    //t ^= t >> 2;
+    //t ^= t >> 4;
+    //t ^= t >> 8;
+    //t ^= t >> 16;
+    //t ^= t >> 32;
+    //@compileLog(comptimePrint("count_bits({b}) = {}", .{ v, t }));
+    //return t;
     return count;
 }
+
+///outputs a vector as a mask for @shuffle() that aligns a subset packed array with a superset array
+/// it selects the next subset idx if it aligns with the superset and selects against it if it doesnt
+/// TODO: this might also work if sbset is partially disjoint with superset
+fn subset_align_with_superset_shuffle_mask(comptime sbset: usize, comptime superset: usize, comptime select_against: enum { to_neg_1, decr }) @Vector(count_bits(superset), i32) {
+    var len: usize = count_bits(superset);
+    //var subset_len: usize = count_bits(sbset);
+    var ret = @Vector(len, i32){0} ** len;
+
+    //array indices
+    var superset_idx = 0;
+    var sbset_idx = 0;
+
+    var bit_index = 0;
+    var select_against_idx = -1;
+
+    //iterate bit_index until you find a 1 in superset, that will be superset's first array element
+    // super set:
+    //0b10110110001101
+    //  7 65 43   21 0
+    // = {0,1,2,3,4,5,6,7}
+
+    // subset:
+    //0b10110010000100
+    //  4 32  1    0
+    // = {0,1,2,3,4}
+    //aligns with {1,3,5,6,7}
+    //output @Vector(_,i32){s,0,s,1,s,2,3,4}
+    //where s = something determined by the value of select_against
+    //then with the output a caller than wants to zero fill unaligned components can then do
+    // @shuffle(T, subset.terms, zero_mask, @subset_align_with_superset_shuffle_mask(subset_type.subset, dest_type.subset, .to_neg_1))
+    // to create something that can just be added to superset.terms
+    //ret must align with superset's array
+
+    //const one: usize = 0b1;
+    while (len > 0) { //the bitfields are aligned, but we need to count array indices (mapping from set elems to natural numbers)
+        defer bit_index += 1;
+        const in_superset: bool = (superset >> bit_index) & 0b1 != 0;
+        const in_subset: bool = (sbset >> bit_index) & 0b1 != 0;
+
+        if (in_superset == false) {
+            continue;
+        }
+
+        if (in_subset) {
+            ret[superset_idx] = sbset_idx;
+            sbset_idx += 1;
+        } else {
+            ret[superset_idx] = select_against_idx;
+            if (select_against == .decr) {
+                select_against_idx -= 1;
+            }
+        }
+
+        superset_idx += 1;
+        len -= 1;
+    }
+
+    return ret;
+}
+
+//fn bitfield_to_vector_shuffle_mask(comptime superset: usize, comptime sbset: usize) @Vector(count_bits(superset), i32) {
+//    const len: usize = count_bits(superset);
+//    var ret = @Vector(len, )
+//}
 
 //we want 1 for an odd number of 1's, 0 for an even number of 1's (even parity)
 //given that we need to map +1->-1 = 1111... and 0->+1 = 0b000...01
@@ -281,9 +395,9 @@ fn count_bits(v: usize) usize {
 //val = ~even_parity(lhs & rhs) + 1 + even_parity(lhs & rhs) & 1
 //so flip_value = ~even_parity(lhs & rhs) += 1 + flip_value & 1
 
-fn count_flips(left: usize, rhs: usize) usize {
+fn count_flips(left: anytype, rhs: anytype) @TypeOf(left) {
     var lhs = left >> 1;
-    var flips: usize = 0;
+    var flips: @TypeOf(left) = 0;
     while (lhs != 0) {
         flips += count_bits(lhs & rhs);
         lhs >>= 1;
@@ -336,6 +450,10 @@ fn even_parity(field: usize, comptime d: comptime_int) usize {
     return (0x6996 >> field) & 1;
 }
 
+//fn Foo<T>(arg: T) {
+//return arg * 2;
+//}
+
 fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime T: type) type {
     const _d: usize = _p + _n + _z;
     const basis_size: usize = std.math.pow(usize, 2, _d);
@@ -361,22 +479,26 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
     var n_bits = _n;
 
     //var curr_bit = 0;
-    var zero_mask: usize = 0;
-    var pos_mask: usize = 0;
-    var neg_mask: usize = 0;
+    var _zero_mask: usize = 0;
+    var _pos_mask: usize = 0;
+    var _neg_mask: usize = 0;
 
     for (0.._d) |b| { // bitfield gen
         if (z_bits > 0) {
             z_bits -= 1;
-            zero_mask |= (0b1 << b);
+            _zero_mask |= (0b1 << b);
         } else if (p_bits > 0) {
             p_bits -= 1;
-            pos_mask |= (0b1 << b);
+            _pos_mask |= (0b1 << b);
         } else if (n_bits > 0) {
             n_bits -= 1;
-            neg_mask |= (0b1 << b);
+            _neg_mask |= (0b1 << b);
         }
     }
+
+    const zero_mask: usize = _zero_mask;
+    const pos_mask: usize = _pos_mask;
+    const neg_mask: usize = _neg_mask;
 
     //@compileLog("zero, pos, neg: ", zero_mask, pos_mask, neg_mask, "0b10000:", 0b10000, "count_bits(0b1001):", count_bits(0b1001), "count_flips(e12 = 0b0011, e1 = 0b0001):", count_flips(0b0011, 0b0001));
 
@@ -487,9 +609,6 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
     const _bin_ip_cayley_table_inv = bin_ip_cayley_table_inverse;
     const _bin_rp_cayley_table_inv = bin_rp_cayley_table_inverse;
 
-    const _zero_mask = zero_mask;
-    const _pos_mask = pos_mask;
-    const _neg_mask = neg_mask;
     const alg = struct {
         pub const Alg = @This();
         pub const D = T;
@@ -500,9 +619,14 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         pub const basis: [basis_len]BinBlade = bin_basis;
         pub const basis_len: usize = basis_size;
 
-        pub const mask_zero = _zero_mask;
-        pub const mask_pos = _pos_mask;
-        pub const mask_neg = _neg_mask;
+        ///runtime int needed to fit a single blade
+        pub const ud: type = std.math.IntFittingRange(0, basis_len - 1);
+        ///runtime int needed to fit our maximum subset
+        pub const ux: type = std.math.IntFittingRange(0, std.math.pow(u128, 2, basis_len) - 1);
+
+        pub const mask_zero = zero_mask;
+        pub const mask_pos = pos_mask;
+        pub const mask_neg = neg_mask;
 
         pub const KnownSignatures = enum {
             PGAnd,
@@ -611,42 +735,6 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             ignore_zeroes: bool = false,
             nonzero_scalars_as_blade: bool = false,
         };
-
-        //fn FormatMatrix(rows: usize, columns: usize) type {
-        //
-        //    var ret = struct {
-        //        const us = @This();
-        //        elements: [rows][columns] ElementFormat,
-        //
-        //        fn concat_rows() us {
-        //
-        //        }
-        //    };
-        //}
-        //
-        //pub const Alignment = enum {
-        //    close, //left hand side for columns up side in rows
-        //    center,
-        //    far
-        //};
-        //
-        //pub const TableFormat = struct {
-        //    element_formats: [] const RowFormat,
-        //
-        //    column_alignment: Alignment = .center,
-        //    row_alignment: Alignment = .center,
-        //
-        //    //number of extra spaces inserted into every row's string slice
-        //    horizontal_padding: usize = 0,
-        //    ///number of extra newlines inserted between table rows
-        //    vertical_padding: usize = 0,
-        //
-        //    horizontal_padding_char: u8 = '|',
-        //    vertical_padding_char: u8 = '-'
-        //
-        //};
-
-        //pub const TableFormat = []RowFormat;
 
         fn cayley_printer(element: BinBlade, current_slice: []u8, fmt: RowFormat) void {
             const mid_slice = @as(usize, @as(usize, @intFromFloat(std.math.ceil(@as(T, @floatFromInt(current_slice.len)) / 2.0)))) - 1;
@@ -855,7 +943,366 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
         //}
 
-        pub fn MVecSubset(comptime subset: usize) type {
+        //define a datatype that is total over the functions you want
+        //and then place it in a tensor
+        fn BladeTerm() type {
+            return struct {
+                const Us: type = @This();
+                value: T,
+                blade: ux,
+            };
+        }
+
+        //multiplication like binary operations map a tensor of dim [a,b,c,...f]
+        //and a tensor of dim[g,h,i,j,...,m] to a concatenated [a,b,...f,g,h,i,...m]
+        //[16] gp [16] = [16,16] = 16**2 terms in a dense map
+        //[16,16] gp [16] = [16,16,16] = 16**3 terms in a dense map
+        fn Tensor() type {
+            //pub fn to_sparse_map()
+        }
+
+        ///pretty sure its 100% possible to get runtime and compile time GA expression generation and optimization
+        /// done using the exact same infrastructure, so im structuring operations after something like an expression parser
+        const Operation = enum {
+            GeometricProduct,
+            OuterProduct,
+            InnerProduct,
+            RegressiveProduct,
+
+            Dual,
+
+            pub fn n_ary(self: @This()) comptime_int {
+                return switch (self) {
+                    .GeometricProduct => 2,
+                    .OuterProduct => 2,
+                    .InnerProduct => 2,
+                    .RegressiveProduct => 2,
+                    .Dual => 1,
+                };
+            }
+
+            //pub fn terms_upper_bound(self: @This()) comptime_int {
+            //    return switch(self) {
+            //        .GeometricProduct =>
+            //    }
+            //}
+
+            pub fn BladeOp(self: @This()) type {
+                return switch (self) {
+                    .GeometricProduct => struct {
+                        pub fn eval(left: BladeTerm(), right: BladeTerm()) BladeTerm() {
+                            const lhs = left.blade;
+                            const rhs = right.blade;
+                            const squares = lhs & rhs;
+                            const blade: ux = lhs ^ rhs;
+                            if (squares & zero_mask != 0) {
+                                return BladeTerm(){ .value = 0, .blade = 0 };
+                            }
+                            const neg_powers_mod_2: isize = @intCast(((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1);
+                            const value: isize = -2 * neg_powers_mod_2 + 1;
+                            return BladeTerm(){ .value = left.value * right.value * @as(f64, @floatFromInt(value)), .blade = blade };
+                        }
+                    },
+                    .OuterProduct => struct {
+                        pub fn eval(left: BladeTerm(), right: BladeTerm()) BladeTerm() {
+                            const lhs = left.blade;
+                            const rhs = right.blade;
+                            const squares = lhs & rhs;
+                            const blade = lhs ^ rhs;
+                            if (squares != 0) {
+                                return .{ .value = 0, .blade = blade };
+                            }
+                            return .{ .value = if (count_flips(lhs, rhs) & 1) -1 else 1, .blade = blade };
+                        }
+                    },
+                    .InnerProduct => struct {
+                        pub fn eval(left: BladeTerm(), right: BladeTerm()) BladeTerm() {
+                            const lhs = left.blade;
+                            const rhs = right.blade;
+                            const squares = lhs & rhs;
+                            const blade = lhs ^ rhs;
+                            if (squares & zero_mask != 0) {
+                                return .{ .value = 0, .blade = blade };
+                            }
+                            const ul = lhs & blade;
+                            const ur = rhs & blade;
+
+                            const value = -2 * (((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1) + 1;
+                            return .{ .value = if (ul == 0 or ur == 0) value else 0, .blade = blade };
+                        }
+                    },
+
+                    .RegressiveProduct => struct {
+                        pub fn eval(left: BladeTerm(), right: BladeTerm()) BladeTerm() {
+                            const lhs = left.blade ^ pseudoscalar_blade;
+                            const rhs = right.blade ^ pseudoscalar_blade;
+                            const squares = lhs & rhs;
+                            if (squares != 0) {
+                                return;
+                            }
+
+                            const blade = lhs ^ rhs ^ pseudoscalar_blade;
+
+                            const value = -2 * (((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1) + 1;
+                            return .{ .value = value, .blade = blade };
+                        }
+                    },
+
+                    .Dual => struct {
+                        pub fn eval(us: BladeTerm()) BladeTerm() {
+                            const squares = us.blade & pseudoscalar_blade;
+                            return .{ .value = us.value * (-2 * ((squares & neg_mask) ^ count_flips(us.blade, pseudoscalar_blade) & 1)) + 1, .blade = us.blade ^ pseudoscalar_blade };
+                        }
+                    },
+                };
+            }
+        };
+
+        const CayleyReturn = struct { fst: [basis_size][basis_size]BladeTerm(), snd: [basis_size][basis_size]ProdTerm, third: [basis_size]usize };
+
+        //step 1: create the masked cayley space
+        //if this is generic to the transformation we need to tell it how to do each operand blade n-tuple
+        //pub fn masked_cayley_space(comptime operand_subsets: []comptime_int, comptime operations: []Operation) void {}
+        pub fn cayley_table(lhs_subset: ux, rhs_subset: ux, op: anytype, lhs_known_vals: ?[basis_size]struct { known: bool, val: T }, rhs_known_vals: ?[basis_size]struct { known: bool, val: T }) CayleyReturn {
+            //const prods = count_bits(lhs_subset & rhs_subset);
+            //const left_elems = count_bits(lhs_subset);
+            //const right_elems = count_bits(rhs_subset);
+            var ret: [basis_len][basis_len]BladeTerm() = .{.{undefined} ** basis_len} ** basis_len;
+            var inv: [basis_len][basis_len]ProdTerm = .{.{undefined} ** basis_len} ** basis_len;
+
+            const one: ux = 0b1;
+
+            var inv_indices: [basis_len]usize = .{0} ** basis_len;
+
+            for (0..basis_len) |lhs| {
+                //const lhs_curr_idx = count_bits(lhs_subset & ((0b1 << lhs) - 1));
+                const lhs_value = if (lhs_known_vals != null and lhs_known_vals.?[lhs].known) lhs_known_vals.?[lhs].val else 1;
+                for (0..basis_len) |rhs| {
+                    const t_lhs: ud = @truncate(lhs);
+                    const t_rhs: ud = @truncate(rhs);
+                    if (rhs_subset & (one << t_rhs) == 0 or lhs_subset & (one << t_lhs) == 0) {
+                        ret[lhs][rhs] = BladeTerm(){ .value = 0, .blade = 0 };
+                        continue;
+                    }
+                    //const rhs_curr_idx = count_bits(rhs_subset & ((0b1 << rhs) - 1));
+                    const rhs_value = if (rhs_known_vals != null and rhs_known_vals.?[lhs].known) rhs_known_vals.?[lhs].val else 1;
+
+                    const res = op.eval(.{ .value = lhs_value, .blade = t_lhs }, .{ .value = rhs_value, .blade = t_rhs });
+                    ret[lhs][rhs] = res;
+                    if (res.value == 0) {
+                        continue;
+                    }
+                    //inv[result term blade][0..n] = .{magnitude coeff, lhs operand, rhs operand}
+                    // where 0..n are the filled in indices, n = inv_indices[]
+                    inv[res.blade][inv_indices[res.blade]] = .{ .mult = res.value, .left_blade = lhs, .right_blade = rhs };
+                    inv_indices[res.blade] += 1;
+                }
+            }
+
+            return .{ .fst = ret, .snd = inv, .third = inv_indices };
+        }
+
+        pub fn inverse_table_and_op_res_to_scatter_masks(comptime inv: [basis_len][basis_len]ProdTerm, comptime inv_indices: [basis_len]usize, comptime lhs_subset: ux, comptime rhs_subset: ux, comptime superset: ux, comptime len: usize) struct { [basis_len][len]i32, [basis_len][len]i32, [basis_len][len]T } {
+            //for full multivectors, result[i] = sigma(inverse[i][0..inv_indices[i]])
+            //in the end we want to do inline for(mask_a, mask_b, mask_coeff) |ma,mb,mc| {
+            //  res.* += @shuffle(lhs.val, @splat(1), ma)}
+            // this means that mask_a[i] = ma must be of the form: {-1,-1,5,4,2,-1,1,-1,3,0}
+            // if lhs is len 6, its being gathered into a result type of len 10, and:
+            // res[0] = op(1,rhs[x]) + ... = inv[0][0] ** 2 + inv[0][1] ** 2 + inv[0][2] ** 2 + ... + inv[0][inv_indices[0]] ** 2
+            // res[1] = op(1, rhs[x]) + ...
+            // res[2] = op(lhs[5], rhs[x]) + ...
+            // res[3] = op(lhs[4],rhs[x]) + ...
+            // res[4] = op(lhs[2], rhs[x]) + ...
+            // res[5] = op(1, rhs[x]) + ...
+            // res[6] = op(lhs[1], rhs[x]) + ...
+            // ...
+            //where inv[res blade][ith term] ** 2 = inv[res blade][ith].mult * lhs.terms[inv[res blade][ith].left_blade] * rhs.terms[inv[res blade][ith].right_blade]
+            //                                      = coeff_masks[ith][res blade]               = lhs_masks[ith][res blade]   = rhs_masks[ith][res blade]
+            //const len = count_bits(superset);
+            const max_terms = basis_len;
+
+            //       terms upper bound       count_bits(superset)
+            //of the form: [ith term][res blade idx in superset] = an index in the lhs.terms array (inv[res blade][ith].left_blade) if lhs_subset & (0b1 << res blade) != 0 else -1
+            //execute_sparse_vector_op() needs to iterate through the adds we give them, num_terms of these,
+            //meaning that at least one of the result vectors elements = t1 + t2 + t3 + ... + t[num_terms]
+            //if either of the lhs or rhs masks ith term = {-1,...,-1} for count_bits(superset) then that term is invalid and we continue
+            comptime var lhs_masks: [basis_size][len]i32 = .{.{-1} ** len} ** basis_len;
+            comptime var rhs_masks: [basis_size][len]i32 = .{.{-1} ** len} ** basis_len;
+            comptime var coeff_masks: [basis_size][len]T = .{.{0} ** len} ** basis_len;
+
+            var masks_idx: usize = 0;
+
+            //lhs_masks[upper_len-1][]
+
+            //res_idx = count_bits(superset & ((0b1 << result_blade) - 1))
+
+            const one: ux = 0b1;
+
+            for (0..max_terms) |ith_term| {
+                //check if ith_term <= inv_indices[result_blade] for all result_blade's that are in superset, if theres any terms left then collate them into the next set of masks
+                var remaining_terms: bool = false;
+                for (0..basis_len) |res_blade| {
+                    const result_blade: ud = @truncate(res_blade);
+                    if ((superset & (one << result_blade)) != 0 and inv_indices[result_blade] >= ith_term) {
+                        remaining_terms = true;
+                        break;
+                    }
+                }
+                if (remaining_terms == false) {
+                    break;
+                }
+                defer masks_idx += 1;
+
+                var lhs_mask: [len]i32 = .{-1} ** len;
+                var rhs_mask: [len]i32 = .{-1} ** len;
+                var coeff_mask: [len]T = .{0} ** len;
+
+                for (0..basis_len) |res_blade| {
+                    const result_blade: ud = @truncate(res_blade);
+                    //@compileLog(result_blade.Int);
+                    if (superset & (one << result_blade) == 0) {
+                        continue;
+                    }
+                    //is this undefined?
+                    const inv_term = comptime inv[result_blade][ith_term];
+
+                    const coeff = inv_term.mult;
+                    const left_operand_blade = inv_term.left_blade;
+                    const right_operand_blade = inv_term.right_blade;
+
+                    const left_t_blade: std.math.IntFittingRange(0, 15) = @truncate(left_operand_blade);
+                    const right_t_blade: ud = @truncate(right_operand_blade);
+
+                    //const xd = (one << left_operand_blade) - 1;
+                    //_ = xd;
+
+                    const lhs_idx = comptime count_bits(lhs_subset & ((one << left_t_blade) -% 1));
+                    const rhs_idx = comptime count_bits(rhs_subset & ((one << right_t_blade) -% 1));
+
+                    const res_idx = comptime count_bits(superset & ((one << result_blade) -% 1));
+
+                    //comptime lhs_mask.set(res_idx, lhs_idx);
+                    //comptime rhs_mask.set(res_idx, rhs_idx);
+                    //comptime coeff_mask.set(res_idx, coeff);
+                    lhs_mask[res_idx] = lhs_idx;
+                    rhs_mask[res_idx] = rhs_idx;
+                    coeff_mask[res_idx] = coeff;
+                }
+
+                //lhs_masks[ith_term] =
+                //comptime try lhs_masks.append(lhs_mask);
+                //comptime try rhs_masks.append(rhs_mask);
+                //comptime try coeff_masks.append(coeff_mask);
+                @memcpy(lhs_masks[ith_term][0..len], lhs_mask[0..len]);
+                @memcpy(rhs_masks[ith_term][0..len], rhs_mask[0..len]);
+                @memcpy(coeff_masks[ith_term][0..len], coeff_mask[0..len]);
+            }
+
+            const ret_lhs: [basis_len]@Vector(len, i32) = lhs_masks;
+            const ret_rhs: [basis_len]@Vector(len, i32) = rhs_masks;
+            const ret_coeff: [basis_len]@Vector(len, T) = coeff_masks;
+
+            return comptime .{ ret_lhs, ret_rhs, ret_coeff };
+        }
+
+        //shuffle, mul, and add
+        pub fn execute_sparse_vector_op(lhs: anytype, rhs: anytype, res: anytype, comptime masks: anytype, comptime len: usize, comptime DataType: type) void {
+            const lhs_masks = masks[0];
+            const rhs_masks = masks[1];
+            const coeff_masks = masks[2];
+
+            //const res_type = @typeInfo(@TypeOf(res)).Pointer.child;
+
+            if (is_comptime(len)) {
+                //@compileLog("execute_sparse_vector_op() is in comptime");
+
+                const ones: @Vector(len, i32) = @splat(1);
+                const invalid_mask: @Vector(len, i32) = @splat(-1);
+                const zeros: @Vector(len, T) = @splat(0);
+
+                const pos: @Vector(len, T) = @splat(1);
+                const neg: @Vector(len, T) = @splat(-1);
+
+                inline for (lhs_masks, rhs_masks, coeff_masks) |lhs_mask, rhs_mask, coeff_mask| {
+                    const invalid = comptime blk: {
+                        break :blk @reduce(.And, lhs_mask == invalid_mask) or @reduce(.And, rhs_mask == invalid_mask) or @reduce(.And, coeff_mask == zeros);
+                    };
+                    if (!invalid) {
+                        //@compileLog(comptimePrint("\nlhs mask: {d: <3.0}, rhs_mask: {d: <3.0}, coeff_mask: {d: <3.0}", .{ lhs_mask, rhs_mask, coeff_mask }));
+                        const first = @shuffle(DataType, lhs.terms, ones, lhs_mask);
+                        const second = @shuffle(DataType, rhs.terms, ones, rhs_mask);
+                        if (comptime @reduce(.And, coeff_mask == pos)) {
+                            res.terms += first * second;
+                        } else if (comptime @reduce(.And, coeff_mask == neg)) {
+                            res.terms -= first * second;
+                        } else {
+                            res.terms += first * second * coeff_mask;
+                        }
+                    }
+                }
+            } else {
+                @compileLog("execute_sparse_vector_op() is NOT in comptime!!!!!!!");
+                const ones: @Vector(basis_len, i32) = @splat(1);
+                const invalid_mask: @Vector(basis_len, i32) = @splat(-1);
+                const zeros: @Vector(basis_len, i32) = @splat(0);
+
+                //remove this when we get the comptime branch open
+                inline for (lhs_masks, rhs_masks, coeff_masks) |lhs_mask, rhs_mask, coeff_mask| {
+                    const invalid = @reduce(.And, lhs_mask == invalid_mask) or @reduce(.And, rhs_mask == invalid_mask) or @reduce(.And, coeff_mask == zeros);
+                    if (!invalid) {
+                        const first = @shuffle(DataType, lhs.terms, ones, lhs_mask);
+                        const second = @shuffle(DataType, rhs.terms, ones, rhs_mask);
+                        res.terms.* += first * second * coeff_mask;
+                    }
+                }
+            }
+        }
+
+        const UnaryProdTerm = struct { mult: T, opr: usize };
+        const UnaryCayleyReturn = struct { fst: [basis_len]BladeTerm(), snd: [basis_len]UnaryProdTerm };
+
+        pub fn unary_cayley_table(opr_subset: ux, op: anytype, opr_known_vals: ?[basis_size]struct { known: bool, val: T }) UnaryCayleyReturn {
+            //const prods = count_bits(lhs_subset & rhs_subset);
+            //const left_elems = count_bits(lhs_subset);
+            //const right_elems = count_bits(rhs_subset);
+            var ret: [basis_len]BladeTerm() = .{undefined} ** basis_len;
+            var inv: [basis_len]UnaryProdTerm = .{undefined} ** basis_len;
+
+            const one: ux = 0b1;
+
+            for (0..basis_len) |blade| {
+                const t_blade: ud = @truncate(blade);
+                if (opr_subset & (one << t_blade) == 0) {
+                    ret[t_blade] = BladeTerm(){ .value = 0, .blade = 0 };
+                    continue;
+                }
+                //const rhs_curr_idx = count_bits(rhs_subset & ((0b1 << rhs) - 1));
+                const value = if (opr_known_vals != null and opr_known_vals.?[t_blade].known) opr_known_vals.?[t_blade].val else 1;
+
+                const res = op.eval(.{ .value = value, .blade = blade });
+                ret[blade] = res;
+                if (res.value == 0) {
+                    continue;
+                }
+                //inv[result term blade][0..n] = .{magnitude coeff, lhs operand, rhs operand}
+                // where 0..n are the filled in indices, n = inv_indices[]
+                inv[res.blade] = .{ .mult = res.value, .opr = blade };
+            }
+
+            return .{ .fst = ret, .snd = inv };
+        }
+
+        pub fn unary_inverse_table_to_scatter_mask(comptime inv: [basis_len]UnaryProdTerm, comptime opr_subset: ux, comptime res_subset: ux, comptime len: usize) struct { [len]i32, [len]T } {}
+        ///goes through every element of the given cayley table and adds its value to a return array at the index of that elements blade
+        /// we want output += coeffs * scattered lhs * scattered rhs
+        //pub fn invert_cayley_table(cayley_table: [][]BladeTerm()) [][]ProdTerm() {
+        //to our customers we want to provide the information "what affects the value of this term" for each term
+        //cayley_table will be 0 in every non included row
+        //    var ret: [basis_len][basis_len]ProdTerm() = undefined;
+
+        //}
+
+        pub fn MVecSubset(comptime subset: ux) type {
 
             //Naive (Multi) Vector - full basis_size elements
             const ret = struct {
@@ -871,7 +1318,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 };
 
                 pub const name = [_]u8{"Multivector"};
-                pub const subset_field: usize = subset;
+                pub const subset_field: ux = subset;
 
                 pub const unbroken_range: bool = blk: {
                     var bit_index = 0;
@@ -1029,47 +1476,6 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     try writer.writeAll("}");
                 }
 
-                ///returns the union of both operand type's values
-                pub fn AddResType(lhs: []Blade, rhs: []Blade) type {
-                    if (@inComptime() == false) {
-                        @compileLog("AddResType not in comptime, dont think this should be illegal but i want to know when its true");
-                    }
-                    var res = [0]BasisBladeEnum{};
-                    //var num_terms = 0;
-                    var left_idx = 0;
-                    var right_idx = 0;
-                    //make the assumption that all enum lists are in ascending order
-                    //s = 0, s
-                    //e0 = 1, e0,
-                    //e1 = 2, e02,
-                    //e01 = 3, e12,
-                    //e2 = 4
-                    //e02 = 5
-                    //e12 = 6
-                    for (0..lhs.len + rhs.len) |_| {
-                        const lb = lhs[left_idx];
-                        const rb = rhs[right_idx];
-                        const left_value = @intFromEnum(lb);
-                        const right_value = @intFromEnum(rb);
-                        if (left_value == right_value) {
-                            res = res ++ .{lb};
-                            //num_terms += 1;
-                            left_idx += 1;
-                            right_idx += 1;
-                        } else if (left_value < right_value) {
-                            res = res ++ .{lb};
-                            //num_terms += 1;
-                            left_idx += 1;
-                        } else {
-                            res = res ++ .{rb};
-                            //num_terms += 1;
-                            right_idx += 1;
-                        }
-                    }
-                    const ret: []const BasisBladeEnum = res[0..res.len];
-                    return Self.Algebra.MVecSubset(ret);
-                }
-
                 pub inline fn has(comptime m_i: usize) bool {
                     return subset & (0b1 << m_i) != 0b0;
                 }
@@ -1094,16 +1500,38 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     }
                 }
 
-                pub fn add(lhs: anytype, lhs_type: type, rhs: anytype, rhs_type: type, ret_ptr: anytype, ret_type: type) *ret_type {
+                pub fn add(comptime lhs_type: type, lhs: *lhs_type, comptime rhs_type: type, rhs: *rhs_type, comptime ret_type: type, ret_ptr: *ret_type) *ret_type {
                     //if((@hasField(left_type, "Blades") == false or @hasField(right_type, "Blades") == false)) {
                     //    @compileError("YOU CANT JUST PASS ANYTHING INTO ADD()");
                     //}
                     //ret_ptr.terms =
+
+                    const union_field = comptime blk: {
+                        break :blk lhs_type.subset_field | rhs_type.subset_field;
+                    };
+                    comptime {
+                        if (ret_type.subset_field & union_field != union_field) {
+                            @compileError("add(): ret_type must contain the union of lhs_type and rhs_type as a subset");
+                        }
+                    }
+
+                    if (ret_type == lhs_type and ret_type == rhs_type) {
+                        ret_ptr.terms = lhs.terms + rhs.terms;
+                        return ret_ptr;
+                    }
+                    //this is not comptime fix that
+                    if (@intFromPtr(lhs) == @intFromPtr(ret_ptr) and ret_type.subset_field & rhs_type.subset_field != ret_type.subset_field) { //rhs is a subset of ret and the dest is lhs
+                        //shuffle rhs to align with lhs and add them
+                        const zero: @Vector(ret_type.num_terms, T) = @splat(0.0);
+                        ret_ptr.terms += @select(T, rhs.terms, zero, subset_align_with_superset_shuffle_mask(rhs_type.subset, ret_type.subset, .to_neg_1));
+                        return ret_ptr;
+                    }
+
                     inline for (0..ret_type.num_terms) |i| {
                         const mvec_idx = comptime blk: {
                             break :blk ret_type.mvec_index(i);
                         };
-                        if (lhs_type.has(mvec_idx)) {
+                        if (lhs_type.has(mvec_idx)) { //this has terrible code generation, it "inlines" by jumping all over the place
                             if (rhs_type.has(mvec_idx)) {
                                 ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx) + rhs.get_redirect(mvec_idx));
                             } else {
@@ -1147,7 +1575,30 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn gp(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
+                pub fn gp(left: anytype, right: anytype, res: anytype) void {
+                    const left_type: type = @typeInfo(@TypeOf(left)).Pointer.child;
+                    const right_type: type = @typeInfo(@TypeOf(right)).Pointer.child;
+                    const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+
+                    const left_set: ux = comptime blk: {
+                        break :blk left_type.subset_field;
+                    };
+                    const right_set: ux = comptime blk: {
+                        break :blk right_type.subset_field;
+                    };
+                    const res_set: ux = comptime blk: {
+                        break :blk res_type.subset_field;
+                    };
+
+                    const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.GeometricProduct.BladeOp(), null, null);
+                    //tell the table inverter the res size, then we can expect it to return an array with comptime known size
+                    const res_size = comptime count_bits(res_set);
+                    const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
+
+                    Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
+                }
+
+                pub fn gp_inv(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
                         switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
@@ -1176,6 +1627,37 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             result.terms[res_blade] += val * (left.terms[lhs] + right.terms[rhs]);
                         }
                     }
+
+                    return result;
+                }
+
+                pub fn gp_handrolled(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
+                    const result: *Self = blk: {
+                        switch (res_type) {
+                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
+                            .ptr => break :blk res_data.ptr,
+                        }
+                    };
+                    const res = &result.terms;
+                    const b = &right.terms;
+                    const a = &left.terms;
+
+                    res[0] = b[0] * a[0] + b[2] * a[2] + b[3] * a[3] + b[4] * a[4] - b[8] * a[8] - b[9] * a[9] - b[10] * a[10] - b[14] * a[14];
+                    res[1] = b[1] * a[0] + b[0] * a[1] - b[5] * a[2] - b[6] * a[3] - b[7] * a[4] + b[2] * a[5] + b[3] * a[6] + b[4] * a[7] + b[11] * a[8] + b[12] * a[9] + b[13] * a[10] + b[8] * a[11] + b[9] * a[12] + b[10] * a[13] + b[15] * a[14] - b[14] * a[15];
+                    res[2] = b[2] * a[0] + b[0] * a[2] - b[8] * a[3] + b[9] * a[4] + b[3] * a[8] - b[4] * a[9] - b[14] * a[10] - b[10] * a[14];
+                    res[3] = b[3] * a[0] + b[8] * a[2] + b[0] * a[3] - b[10] * a[4] - b[2] * a[8] - b[14] * a[9] + b[4] * a[10] - b[9] * a[14];
+                    res[4] = b[4] * a[0] - b[9] * a[2] + b[10] * a[3] + b[0] * a[4] - b[14] * a[8] + b[2] * a[9] - b[3] * a[10] - b[8] * a[14];
+                    res[5] = b[5] * a[0] + b[2] * a[1] - b[1] * a[2] - b[11] * a[3] + b[12] * a[4] + b[0] * a[5] - b[8] * a[6] + b[9] * a[7] + b[6] * a[8] - b[7] * a[9] - b[15] * a[10] - b[3] * a[11] + b[4] * a[12] + b[14] * a[13] - b[13] * a[14] - b[10] * a[15];
+                    res[6] = b[6] * a[0] + b[3] * a[1] + b[11] * a[2] - b[1] * a[3] - b[13] * a[4] + b[8] * a[5] + b[0] * a[6] - b[10] * a[7] - b[5] * a[8] - b[15] * a[9] + b[7] * a[10] + b[2] * a[11] + b[14] * a[12] - b[4] * a[13] - b[12] * a[14] - b[9] * a[15];
+                    res[7] = b[7] * a[0] + b[4] * a[1] - b[12] * a[2] + b[13] * a[3] - b[1] * a[4] - b[9] * a[5] + b[10] * a[6] + b[0] * a[7] - b[15] * a[8] + b[5] * a[9] - b[6] * a[10] + b[14] * a[11] - b[2] * a[12] + b[3] * a[13] - b[11] * a[14] - b[8] * a[15];
+                    res[8] = b[8] * a[0] + b[3] * a[2] - b[2] * a[3] + b[14] * a[4] + b[0] * a[8] + b[10] * a[9] - b[9] * a[10] + b[4] * a[14];
+                    res[9] = b[9] * a[0] - b[4] * a[2] + b[14] * a[3] + b[2] * a[4] - b[10] * a[8] + b[0] * a[9] + b[8] * a[10] + b[3] * a[14];
+                    res[10] = b[10] * a[0] + b[14] * a[2] + b[4] * a[3] - b[3] * a[4] + b[9] * a[8] - b[8] * a[9] + b[0] * a[10] + b[2] * a[14];
+                    res[11] = b[11] * a[0] - b[8] * a[1] + b[6] * a[2] - b[5] * a[3] + b[15] * a[4] - b[3] * a[5] + b[2] * a[6] - b[14] * a[7] - b[1] * a[8] + b[13] * a[9] - b[12] * a[10] + b[0] * a[11] + b[10] * a[12] - b[9] * a[13] + b[7] * a[14] - b[4] * a[15];
+                    res[12] = b[12] * a[0] - b[9] * a[1] - b[7] * a[2] + b[15] * a[3] + b[5] * a[4] + b[4] * a[5] - b[14] * a[6] - b[2] * a[7] - b[13] * a[8] - b[1] * a[9] + b[11] * a[10] - b[10] * a[11] + b[0] * a[12] + b[8] * a[13] + b[6] * a[14] - b[3] * a[15];
+                    res[13] = b[13] * a[0] - b[10] * a[1] + b[15] * a[2] + b[7] * a[3] - b[6] * a[4] - b[14] * a[5] - b[4] * a[6] + b[3] * a[7] + b[12] * a[8] - b[11] * a[9] - b[1] * a[10] + b[9] * a[11] - b[8] * a[12] + b[0] * a[13] + b[5] * a[14] - b[2] * a[15];
+                    res[14] = b[14] * a[0] + b[10] * a[2] + b[9] * a[3] + b[8] * a[4] + b[4] * a[8] + b[3] * a[9] + b[2] * a[10] + b[0] * a[14];
+                    res[15] = b[15] * a[0] + b[14] * a[1] + b[13] * a[2] + b[12] * a[3] + b[11] * a[4] + b[10] * a[5] + b[9] * a[6] + b[8] * a[7] + b[7] * a[8] + b[6] * a[9] + b[5] * a[10] - b[4] * a[11] - b[3] * a[12] - b[2] * a[13] - b[1] * a[14] + b[0] * a[15];
 
                     return result;
                 }
@@ -1251,7 +1733,30 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn op(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
+                pub fn op(left: anytype, right: anytype, res: anytype) void {
+                    const left_type: type = @typeInfo(@TypeOf(left)).Pointer.child;
+                    const right_type: type = @typeInfo(@TypeOf(right)).Pointer.child;
+                    const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+
+                    const left_set: ux = comptime blk: {
+                        break :blk left_type.subset_field;
+                    };
+                    const right_set: ux = comptime blk: {
+                        break :blk right_type.subset_field;
+                    };
+                    const res_set: ux = comptime blk: {
+                        break :blk res_type.subset_field;
+                    };
+
+                    const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.OuterProduct.BladeOp(), null, null);
+                    //tell the table inverter the res size, then we can expect it to return an array with comptime known size
+                    const res_size = comptime count_bits(res_set);
+                    const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
+
+                    Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
+                }
+
+                pub fn op_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
                         switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
@@ -1273,7 +1778,30 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn ip(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
+                pub fn ip(left: anytype, right: anytype, res: anytype) void {
+                    const left_type: type = @typeInfo(@TypeOf(left)).Pointer.child;
+                    const right_type: type = @typeInfo(@TypeOf(right)).Pointer.child;
+                    const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+
+                    const left_set: ux = comptime blk: {
+                        break :blk left_type.subset_field;
+                    };
+                    const right_set: ux = comptime blk: {
+                        break :blk right_type.subset_field;
+                    };
+                    const res_set: ux = comptime blk: {
+                        break :blk res_type.subset_field;
+                    };
+
+                    const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.InnerProduct.BladeOp(), null, null);
+                    //tell the table inverter the res size, then we can expect it to return an array with comptime known size
+                    const res_size = comptime count_bits(res_set);
+                    const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
+
+                    Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
+                }
+
+                pub fn ip_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
                         switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
@@ -1312,7 +1840,30 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 //count_flips(x, 1111...) = sum(count_bits(x >>= 1))
                 //if in lhs bit i = 1, then flips += pow(2,i-1) (lsb is index 0)
 
-                pub fn rp(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
+                pub fn rp(left: anytype, right: anytype, res: anytype) void {
+                    const left_type: type = @typeInfo(@TypeOf(left)).Pointer.child;
+                    const right_type: type = @typeInfo(@TypeOf(right)).Pointer.child;
+                    const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+
+                    const left_set: ux = comptime blk: {
+                        break :blk left_type.subset_field;
+                    };
+                    const right_set: ux = comptime blk: {
+                        break :blk right_type.subset_field;
+                    };
+                    const res_set: ux = comptime blk: {
+                        break :blk res_type.subset_field;
+                    };
+
+                    const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.RegressiveProduct.BladeOp(), null, null);
+                    //tell the table inverter the res size, then we can expect it to return an array with comptime known size
+                    const res_size = comptime count_bits(res_set);
+                    const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
+
+                    Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
+                }
+
+                pub fn rp_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     const result: *Self = blk: {
                         switch (res_type) {
                             .alloc_new => break :blk try res_data.alloc_new.create(Self),
@@ -1349,40 +1900,155 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn reverse(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = comptime blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                //pub fn unary_op_handle_result(self: *Self, res_arg: anytype, operation: Operation) void {}
 
+                ///i want to be able to handle:
+                /// allocating a new result (res_arg is an allocator),
+                /// mutating a passed in result (res_arg is a ptr that must have the correct subset),
+                /// stack allocating a new result (res_arg is null)
+                //pub fn UnaryOpResultType(self: anytype, res_arg: anytype, operation: Operation) type {
+                //    const ResArg: type = @TypeOf(res_arg);
+                //    const ResInfo = @typeInfo(ResArg);
+                //    const SelfInfo = @typeInfo(@TypeOf(self));
+                //    var mutate_res_arg: bool = false;
+                //    switch(ResInfo) {
+                //        .Optional => {
+                //            if(res_arg == null) {
+                //
+                //                return void; //in place mutation or stack allocation
+                //            } else {
+                //
+                //            }
+                //        },
+                //        .Null => {
+                //
+                //        }
+                //    }
+                //}
+
+                ///subset invariant
+                pub fn reverse(self: *Self) *Self {
+                    const one: ux = 0b1;
                     inline for (0..Self.Algebra.basis_len) |i| {
-                        const mult: T = comptime blk: {
-                            var x: usize = i & ~1;
-                            x /= 2;
-                            if (x & 1 == 0) {
-                                break :blk 1.0;
-                            }
-                            break :blk -1.0;
-                        };
-                        result.terms[i] = mult * self.terms[i];
+                        if (Self.subset_field & (one << @as(ud, @truncate(i))) != 0) {
+                            const mult: T = comptime blk: {
+                                var x: usize = i & ~1;
+                                x /= 2;
+                                if (x & 1 == 0) {
+                                    break :blk 1.0;
+                                }
+                                break :blk -1.0;
+                            };
+                            self.terms[i] = mult * self.terms[i];
+                        }
                     }
-                    return result;
+                    return self;
                 }
 
-                pub fn dual(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = comptime blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                const SubsetResultEnum = enum { into, minimum, mvec, infer };
 
-                    inline for (0..Self.Algebra.basis_len) |i| {
-                        result.terms[i] = self.terms[Self.Algebra.basis_len - 1 - i];
+                const SubsetResult = union(SubsetResultEnum) {
+                    /// forces
+                    into: ux,
+                    minimum,
+                    mvec,
+                    infer,
+                };
+
+                //const DataResult = enum { ptr, allocator, stack_alloc };
+                const DataResultEnum = enum {
+                    ptr,
+                    allocator,
+                    stack_alloc,
+                };
+                pub fn DataResult(comptime sbset_res: SubsetResult) type {
+                    return union(DataResultEnum) { ptr: *MVecSubset(sbset_res.into), allocator: *Allocator, stack_alloc };
+                }
+
+                pub fn DualResult(comptime res: SubsetResult, comptime data: DataResult(res.sbset)) type {
+                    switch (res) {
+                        .into => {
+                            switch (std.meta.activeTag(data)) {
+                                .ptr => {
+                                    return *MVecSubset(res.into);
+                                },
+                                .allocator => {
+                                    return *MVecSubset(res.into);
+                                },
+                                .stack_alloc => {
+                                    return MVecSubset(res.into);
+                                },
+                            }
+                        },
+                        .minimum => {
+                            switch (std.meta.activeTag(data)) {
+                                .ptr => {
+                                    if (@TypeOf(data.ptr) == *Alg.NVec) {
+                                        return *Alg.NVec;
+                                    }
+                                    @compileError("passed .mvec and a pointer to a non mvec to a function!");
+                                },
+                                .allocator => {
+                                    return *Alg.NVec;
+                                },
+                                .stack_alloc => {
+                                    return Alg.NVec;
+                                },
+                            }
+                        },
+                        .mvec => {
+                            switch (std.meta.activeTag(data)) {
+                                .ptr => {
+                                    if (@TypeOf(data.ptr) == *Alg.NVec) {
+                                        return *Alg.NVec;
+                                    }
+                                    @compileError("passed .mvec and a pointer to a non mvec to a function!");
+                                },
+                                .allocator => {
+                                    return *Alg.NVec;
+                                },
+                                .stack_alloc => {
+                                    return Alg.NVec;
+                                },
+                            }
+                        },
+                        .infer => {
+                            switch (std.meta.activeTag(data)) {
+                                .ptr => {
+                                    if (@TypeOf(data.ptr) == *Alg.NVec) {
+                                        return *Alg.NVec;
+                                    }
+                                    @compileError("passed .mvec and a pointer to a non mvec to a function!");
+                                },
+                                .allocator => {
+                                    return *Alg.NVec;
+                                },
+                                .stack_alloc => {
+                                    return Alg.NVec;
+                                },
+                            }
+                        },
                     }
-                    return result;
+                }
+
+                pub fn get_dual_result(comptime res: SubsetResult, data: DataResult(res)) DualResult(res, std.meta.activeTag(@typeInfo(data))) {
+                    if (data.ptr) {
+                        return data.ptr;
+                    }
+                    const Res: type = DualResult(res, data);
+                    if (std.meta.activeTag(data) == DataResultEnum.allocator) {
+                        return try data.create(Res);
+                    }
+                }
+
+                ///changes subsets
+                /// if we have a blade at bit index i, our dual must have a blade at bit index basis_len - 1 - i
+                /// in other words our dual has our subset but mirror across the middle at minimum
+                pub fn dual(self: *Self, res: SubsetResult, data: DataResult(res)) DualResult(res, data) {
+                    inline for (0..Self.Algebra.basis_len) |i| {
+                        res.terms[i] = self.terms[Self.Algebra.basis_len - 1 - i];
+                    }
+                    return res;
                 }
 
                 pub fn involution(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
