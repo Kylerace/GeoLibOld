@@ -63,16 +63,16 @@ pub fn main() !void {
     //51: .LBB5_69
     _ = third.zeros();
 
-    //_=fst.gp(snd, .ptr, .{.ptr=third}).add(fst, .ptr, .{.ptr=third});
+    _=fst.gp(snd, third).add(fst, third);
 
-    try stdout.print("{} gp {} + {} = {}\n", .{ fst, snd, fst, third });
+    try stdout.print("({} gp {}) + {} = {}\n", .{ fst, snd, fst, third });
     //57: .LBB5_79: same add, same commands but slightly different offsets
     //_=fst.gp_get(snd, .ptr, .{.ptr=third}).add(fst, .ptr, .{.ptr=third});
 
     //try stdout.print("{} gp_get {} + {} = {}\n", .{fst, snd, fst, third});
 
     const frth: *NVec = obj_pool[3].zeros();
-    _ = fst.ip(snd, .ptr, .{ .ptr = frth });
+    _ = fst.ip(snd, frth);
     try stdout.print("{} ip {} = {}\n", .{ fst, snd, frth });
     try stdout.print("mag of {} is {}", .{ fst, fst.magnitude() });
     //try stdout.print("{s}", .{alg._op_string});
@@ -100,7 +100,7 @@ pub fn main() !void {
     fst.get(.ptr, .e1).* = 0.17;
     fst.get(.ptr, .e2).* = 31.4;
     fst.get(.ptr, .e3).* = 15.6;
-    try stdout.print("\nmotor terms length {}, motor {} + mvec {} = {}", .{ Motor.num_terms, mtr, fst, Motor.add(Motor, mtr, NVec, fst, NVec, add_res) });
+    try stdout.print("\nmotor terms length {}, motor {} + mvec {} = {}", .{ Motor.num_terms, mtr, fst, mtr.add( fst, add_res) });
 
     try stdout.print("\nNVec subset: {b}, our_idx_to_blade: {b}", .{ NVec.subset_field, NVec.our_idx_to_blade });
     try stdout.print("\nMotor subset: {b}, our_idx_to_blade: {b}", .{ Motor.subset_field, Motor.our_idx_to_blade });
@@ -125,10 +125,15 @@ pub fn main() !void {
 
     //NVec.gp_op(fst, snd, gp_res);
     //const xie = std.builtin.CallModifier;
-    @call(.never_inline, NVec.gp, .{ op_l, op_r, gp_res });
+    _=@call(.never_inline, NVec.gp, .{ op_l, op_r, gp_res });
     try stdout.print("\ngp op: {} * {} = {}", .{ op_l, op_r, gp_res });
 
-    try benchmark(stdout, allocator);
+    //try benchmark(stdout, allocator);
+
+    const blankie = try allocator.create(NVec);
+    _=blankie.zeros();
+
+    try stdout.print("\n{} dual = {}", .{op_r, op_r.dual(blankie)});
 }
 
 pub fn benchmark(stdout: anytype, allocator: Allocator) !void {
@@ -623,7 +628,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         pub const ud: type = std.math.IntFittingRange(0, basis_len - 1);
         ///runtime int needed to fit our maximum subset
         pub const ux: type = std.math.IntFittingRange(0, std.math.pow(u128, 2, basis_len) - 1);
-
+        
         pub const mask_zero = zero_mask;
         pub const mask_pos = pos_mask;
         pub const mask_neg = neg_mask;
@@ -637,6 +642,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             None,
         };
         pub const signature_name = blk: {
+
             if (z == 1 and n == 0 and p > 0) {
                 break :blk KnownSignatures.PGAnd;
             }
@@ -1027,8 +1033,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             const ul = lhs & blade;
                             const ur = rhs & blade;
 
-                            const value = -2 * (((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1) + 1;
-                            return .{ .value = if (ul == 0 or ur == 0) value else 0, .blade = blade };
+                            const neg_powers_mod_2: isize = @intCast(((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1);
+                            const value: isize = -2 * neg_powers_mod_2 + 1;
+                            return .{ .value = if (ul == 0 or ur == 0) left.value * right.value * value else 0, .blade = blade };
                         }
                     },
 
@@ -1292,7 +1299,44 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             return .{ .fst = ret, .snd = inv };
         }
 
-        pub fn unary_inverse_table_to_scatter_mask(comptime inv: [basis_len]UnaryProdTerm, comptime opr_subset: ux, comptime res_subset: ux, comptime len: usize) struct { [len]i32, [len]T } {}
+        pub fn unary_inverse_table_to_scatter_mask(comptime inv: [basis_len]UnaryProdTerm, comptime opr_subset: ux, comptime res_subset: ux, comptime len: usize) struct { [len]i32, [len]T } {
+            comptime var coeff_mask: [len]T = .{0} ** len;
+            comptime var opr_mask: [len]i32 = .{-1} ** len;
+            const one: ux = 0b1;
+            for(0..basis_len) |res_blade| {
+                const result_blade: ud = @truncate(res_blade);
+                if(res_subset & (one << result_blade) == 0) {
+                    continue;
+                } 
+                const term = inv[result_blade];
+                const coeff = term.mult;
+                const opr_blade: ud = @truncate(term.opr);
+
+                const opr_index = comptime count_bits(opr_subset & ((one << opr_blade) -% 1));
+                const res_idx = comptime count_bits(res_subset & ((one << result_blade) -% 1));
+
+                opr_mask[res_idx] = opr_index;
+                coeff_mask[res_idx] = coeff;
+            }
+
+            const cf_mask: @Vector(len, T) = coeff_mask;
+            const operand_mask: @Vector(len, i32) = opr_mask;
+            return comptime .{operand_mask, cf_mask};
+        }
+
+        pub fn unary_execute_sparse_vector_op(opr: anytype, res: anytype, comptime masks: anytype, comptime len: usize, comptime DataType: type) void {
+            const opr_mask = masks[0];
+            const coeff_mask = masks[1];
+            
+            //const ones: @Vector(len, i32) = @splat(1);
+            //const invalid_mask: @Vector(len, i32) = @splat(-1);
+            const zeros: @Vector(len, T) = @splat(0);
+            //const pos: @Vector(len, T) = @splat(1);
+            //const neg: @Vector(len, T) = @splat(-1);
+
+            const gather = @shuffle(DataType, opr.terms, zeros, opr_mask);
+            res.terms = gather * coeff_mask;
+        }
         ///goes through every element of the given cayley table and adds its value to a return array at the index of that elements blade
         /// we want output += coeffs * scattered lhs * scattered rhs
         //pub fn invert_cayley_table(cayley_table: [][]BladeTerm()) [][]ProdTerm() {
@@ -1500,53 +1544,76 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     }
                 }
 
-                pub fn add(comptime lhs_type: type, lhs: *lhs_type, comptime rhs_type: type, rhs: *rhs_type, comptime ret_type: type, ret_ptr: *ret_type) *ret_type {
+                pub fn add(lhs: anytype, rhs: anytype, res: anytype) @TypeOf(res) { //comptime lhs_type: type, lhs: *lhs_type, comptime rhs_type: type, rhs: *rhs_type, comptime ret_type: type, ret_ptr: *ret_type) *ret_type {
                     //if((@hasField(left_type, "Blades") == false or @hasField(right_type, "Blades") == false)) {
                     //    @compileError("YOU CANT JUST PASS ANYTHING INTO ADD()");
                     //}
                     //ret_ptr.terms =
 
-                    const union_field = comptime blk: {
-                        break :blk lhs_type.subset_field | rhs_type.subset_field;
+                    const left_type: type = @typeInfo(@TypeOf(lhs)).Pointer.child;
+                    const right_type: type = @typeInfo(@TypeOf(rhs)).Pointer.child;
+                    const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+
+                    const left_set: ux = comptime blk: {
+                        break :blk left_type.subset_field;
                     };
+                    const right_set: ux = comptime blk: {
+                        break :blk right_type.subset_field;
+                    };
+                    const res_set: ux = comptime blk: {
+                        break :blk res_type.subset_field;
+                    };
+                    const len = comptime count_bits(res_set);
+
+                    comptime var _lhs_mask: @Vector(len, i32) = @splat(-1);
+                    comptime var _rhs_mask: @Vector(len, i32) = @splat(-1);
                     comptime {
-                        if (ret_type.subset_field & union_field != union_field) {
-                            @compileError("add(): ret_type must contain the union of lhs_type and rhs_type as a subset");
-                        }
-                    }
+                        const one: ux = 0b1;
+                        for(0..basis_len) |res_blade| {
+                            const result_blade: ud = @truncate(res_blade);
+                            if(res_set & (one << result_blade) == 0) {
+                                continue;
+                            } 
+                            const left_idx = count_bits(left_set & ((one << result_blade) -% 1));
+                            const right_idx = count_bits(right_set & ((one << result_blade) -% 1));
+                            const res_idx = count_bits(res_set & ((one << result_blade) -% 1));
 
-                    if (ret_type == lhs_type and ret_type == rhs_type) {
-                        ret_ptr.terms = lhs.terms + rhs.terms;
-                        return ret_ptr;
-                    }
-                    //this is not comptime fix that
-                    if (@intFromPtr(lhs) == @intFromPtr(ret_ptr) and ret_type.subset_field & rhs_type.subset_field != ret_type.subset_field) { //rhs is a subset of ret and the dest is lhs
-                        //shuffle rhs to align with lhs and add them
-                        const zero: @Vector(ret_type.num_terms, T) = @splat(0.0);
-                        ret_ptr.terms += @select(T, rhs.terms, zero, subset_align_with_superset_shuffle_mask(rhs_type.subset, ret_type.subset, .to_neg_1));
-                        return ret_ptr;
-                    }
-
-                    inline for (0..ret_type.num_terms) |i| {
-                        const mvec_idx = comptime blk: {
-                            break :blk ret_type.mvec_index(i);
-                        };
-                        if (lhs_type.has(mvec_idx)) { //this has terrible code generation, it "inlines" by jumping all over the place
-                            if (rhs_type.has(mvec_idx)) {
-                                ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx) + rhs.get_redirect(mvec_idx));
-                            } else {
-                                ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx));
+                            if(left_set & (one << result_blade) != 0) {
+                                _lhs_mask[res_idx] = left_idx;
                             }
-                        } else {
-                            if (rhs_type.has(mvec_idx)) {
-                                ret_ptr.set_redirect(mvec_idx, rhs.get_redirect(mvec_idx));
+                            if(right_set & (one << result_blade) != 0) {
+                                _rhs_mask[res_idx] = right_idx;
                             }
                         }
-                        //check if lhs or rhs have the given field value, and if they do do the add. if they dont then continue
-                        //we need a way of comparing
-                        //result.terms[i] = lhs.terms[i] + rhs.terms[i];
                     }
-                    return ret_ptr;
+                    const lhs_mask = _lhs_mask;
+                    const rhs_mask = _rhs_mask;
+                    const zero: @Vector(len, T) = @splat(0);
+
+                    res.terms = @shuffle(T, lhs.terms, zero, lhs_mask) + @shuffle(T, rhs.terms, zero, rhs_mask);
+
+                    return res;
+
+                    //inline for (0..ret_type.num_terms) |i| {
+                    //    const mvec_idx = comptime blk: {
+                    //        break :blk ret_type.mvec_index(i);
+                    //    };
+                    //    if (lhs_type.has(mvec_idx)) { //this has terrible code generation, it "inlines" by jumping all over the place
+                    //        if (rhs_type.has(mvec_idx)) {
+                    //            ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx) + rhs.get_redirect(mvec_idx));
+                    //        } else {
+                    //            ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx));
+                    //        }
+                    //    } else {
+                    //        if (rhs_type.has(mvec_idx)) {
+                    //            ret_ptr.set_redirect(mvec_idx, rhs.get_redirect(mvec_idx));
+                    //        }
+                    //    }
+                    //    //check if lhs or rhs have the given field value, and if they do do the add. if they dont then continue
+                    //    //we need a way of comparing
+                    //    //result.terms[i] = lhs.terms[i] + rhs.terms[i];
+                    //}
+                    //return ret_ptr;
                 }
 
                 pub fn sub(lhs: *Self, rhs: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
@@ -1575,7 +1642,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn gp(left: anytype, right: anytype, res: anytype) void {
+                pub fn gp(left: anytype, right: anytype, res: anytype) @TypeOf(res) {
                     const left_type: type = @typeInfo(@TypeOf(left)).Pointer.child;
                     const right_type: type = @typeInfo(@TypeOf(right)).Pointer.child;
                     const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
@@ -1596,6 +1663,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
 
                     Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
+                    return res;
                 }
 
                 pub fn gp_inv(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
@@ -1945,14 +2013,19 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return self;
                 }
 
-                const SubsetResultEnum = enum { into, minimum, mvec, infer };
+                const SubsetResultEnum = enum { 
+                    into, 
+                    //minimum, 
+                    mvec, 
+                    //infer 
+                    };
 
                 const SubsetResult = union(SubsetResultEnum) {
                     /// forces
                     into: ux,
-                    minimum,
+                    //minimum,
                     mvec,
-                    infer,
+                    //infer,
                 };
 
                 //const DataResult = enum { ptr, allocator, stack_alloc };
@@ -1962,10 +2035,10 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     stack_alloc,
                 };
                 pub fn DataResult(comptime sbset_res: SubsetResult) type {
-                    return union(DataResultEnum) { ptr: *MVecSubset(sbset_res.into), allocator: *Allocator, stack_alloc };
+                    return union(DataResultEnum) { ptr: switch(sbset_res){.into=>*MVecSubset(sbset_res.into), .mvec=>*MVecSubset(Alg.NVec.subset_field)}, allocator: *Allocator, stack_alloc };
                 }
 
-                pub fn DualResult(comptime res: SubsetResult, comptime data: DataResult(res.sbset)) type {
+                pub fn DualResult(comptime res: SubsetResult, comptime data: DataResult(res)) type {
                     switch (res) {
                         .into => {
                             switch (std.meta.activeTag(data)) {
@@ -1973,29 +2046,29 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                                     return *MVecSubset(res.into);
                                 },
                                 .allocator => {
-                                    return *MVecSubset(res.into);
+                                    return !*MVecSubset(res.into);
                                 },
                                 .stack_alloc => {
                                     return MVecSubset(res.into);
                                 },
                             }
                         },
-                        .minimum => {
-                            switch (std.meta.activeTag(data)) {
-                                .ptr => {
-                                    if (@TypeOf(data.ptr) == *Alg.NVec) {
-                                        return *Alg.NVec;
-                                    }
-                                    @compileError("passed .mvec and a pointer to a non mvec to a function!");
-                                },
-                                .allocator => {
-                                    return *Alg.NVec;
-                                },
-                                .stack_alloc => {
-                                    return Alg.NVec;
-                                },
-                            }
-                        },
+                        //.minimum => {
+                        //    switch (std.meta.activeTag(data)) {
+                        //        .ptr => {
+                        //            if (@TypeOf(data.ptr) == *Alg.NVec) {
+                        //                return *Alg.NVec;
+                        //            }
+                        //            @compileError("passed .mvec and a pointer to a non mvec to a function!");
+                        //        },
+                        //        .allocator => {
+                        //            return !*Alg.NVec;
+                        //        },
+                        //        .stack_alloc => {
+                        //            return Alg.NVec;
+                        //        },
+                        //    }
+                        //},
                         .mvec => {
                             switch (std.meta.activeTag(data)) {
                                 .ptr => {
@@ -2005,50 +2078,61 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                                     @compileError("passed .mvec and a pointer to a non mvec to a function!");
                                 },
                                 .allocator => {
-                                    return *Alg.NVec;
+                                    return !*Alg.NVec;
                                 },
                                 .stack_alloc => {
                                     return Alg.NVec;
                                 },
                             }
                         },
-                        .infer => {
-                            switch (std.meta.activeTag(data)) {
-                                .ptr => {
-                                    if (@TypeOf(data.ptr) == *Alg.NVec) {
-                                        return *Alg.NVec;
-                                    }
-                                    @compileError("passed .mvec and a pointer to a non mvec to a function!");
-                                },
-                                .allocator => {
-                                    return *Alg.NVec;
-                                },
-                                .stack_alloc => {
-                                    return Alg.NVec;
-                                },
-                            }
-                        },
+                        //.infer => {
+                        //    switch (std.meta.activeTag(data)) {
+                        //        .ptr => {
+                        //            if (@TypeOf(data.ptr) == *Alg.NVec) {
+                        //                return *Alg.NVec;
+                        //            }
+                        //            @compileError("passed .mvec and a pointer to a non mvec to a function!");
+                        //        },
+                        //        .allocator => {
+                        //            return !*Alg.NVec;
+                        //        },
+                        //        .stack_alloc => {
+                        //            return Alg.NVec;
+                        //        },
+                        //    }
+                        //},
                     }
                 }
 
-                pub fn get_dual_result(comptime res: SubsetResult, data: DataResult(res)) DualResult(res, std.meta.activeTag(@typeInfo(data))) {
+                pub fn get_dual_result(comptime res: SubsetResult, data: DataResult(res)) DualResult(res, data) {
                     if (data.ptr) {
                         return data.ptr;
                     }
                     const Res: type = DualResult(res, data);
                     if (std.meta.activeTag(data) == DataResultEnum.allocator) {
-                        return try data.create(Res);
+                        const x = try data.create(Res);
+                        x.zeros();
+                        return x;
+                    }
+                    if(std.meta.activeTag(data) == DataResultEnum.stack_alloc) {
+                        const x: Res = undefined;
+                        x.zeros();
+                        return x;
                     }
                 }
 
                 ///changes subsets
                 /// if we have a blade at bit index i, our dual must have a blade at bit index basis_len - 1 - i
                 /// in other words our dual has our subset but mirror across the middle at minimum
-                pub fn dual(self: *Self, res: SubsetResult, data: DataResult(res)) DualResult(res, data) {
-                    inline for (0..Self.Algebra.basis_len) |i| {
-                        res.terms[i] = self.terms[Self.Algebra.basis_len - 1 - i];
-                    }
-                    return res;
+                pub fn dual(self: *Self, result: *NVec) *NVec {
+                    const table = comptime unary_cayley_table(Self.subset_field, Operation.Dual.BladeOp(), null);
+                    const masks = comptime unary_inverse_table_to_scatter_mask(table.snd, Self.subset_field, NVec.subset_field, count_bits(NVec.subset_field));
+                    unary_execute_sparse_vector_op(self, result, masks, count_bits(NVec.subset_field), D);
+
+                    //inline for (0..Self.Algebra.basis_len) |i| {
+                    //    result.terms[i] = self.terms[Self.Algebra.basis_len - 1 - i];
+                    //}
+                    return result;
                 }
 
                 pub fn involution(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
