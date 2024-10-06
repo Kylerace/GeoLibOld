@@ -63,7 +63,7 @@ pub fn main() !void {
     //51: .LBB5_69
     _ = third.zeros();
 
-    _=fst.gp(snd, third).add(fst, third);
+    _ = fst.gp(snd, third).add(fst, third);
 
     try stdout.print("({} gp {}) + {} = {}\n", .{ fst, snd, fst, third });
     //57: .LBB5_79: same add, same commands but slightly different offsets
@@ -100,7 +100,7 @@ pub fn main() !void {
     fst.get(.ptr, .e1).* = 0.17;
     fst.get(.ptr, .e2).* = 31.4;
     fst.get(.ptr, .e3).* = 15.6;
-    try stdout.print("\nmotor terms length {}, motor {} + mvec {} = {}", .{ Motor.num_terms, mtr, fst, mtr.add( fst, add_res) });
+    try stdout.print("\nmotor terms length {}, motor {} + mvec {} = {}", .{ Motor.num_terms, mtr, fst, mtr.add(fst, add_res) });
 
     try stdout.print("\nNVec subset: {b}, our_idx_to_blade: {b}", .{ NVec.subset_field, NVec.our_idx_to_blade });
     try stdout.print("\nMotor subset: {b}, our_idx_to_blade: {b}", .{ Motor.subset_field, Motor.our_idx_to_blade });
@@ -125,15 +125,47 @@ pub fn main() !void {
 
     //NVec.gp_op(fst, snd, gp_res);
     //const xie = std.builtin.CallModifier;
-    _=@call(.never_inline, NVec.gp, .{ op_l, op_r, gp_res });
+    _ = @call(.never_inline, NVec.gp, .{ op_l, op_r, gp_res });
     try stdout.print("\ngp op: {} * {} = {}", .{ op_l, op_r, gp_res });
 
     //try benchmark(stdout, allocator);
 
     const blankie = try allocator.create(NVec);
-    _=blankie.zeros();
+    _ = blankie.zeros();
 
-    try stdout.print("\n{} dual = {}", .{op_r, op_r.dual(blankie)});
+    try stdout.print("\n{} dual = {}", .{ op_r, op_r.dual(blankie) });
+
+    const mot: *Motor = try allocator.create(Motor);
+    _ = mot.zeros();
+    mot.terms[0] = 1;
+    mot.terms[1] = 3.1;
+
+    const sand_res = mot.sandwich(op_l);
+    try stdout.print("\n{} >>> {} = {}", .{mot, op_l, sand_res});
+
+    mot.terms[2] = -2.13;
+    mot.terms[1] = 9.1;
+    mot.terms[3] = 6.7;
+
+    const sand_res2 = mot.sandwich(op_l);
+    try stdout.print("\n{d:<.3} >>> {d:<.3} = {d:<.3}", .{mot, op_l, sand_res2});
+
+    const PRNG = Random.DefaultPrng;
+    var rnd = PRNG.init(4);
+    var rnd2 = rnd.random();
+
+    for(0..10) |_| {
+
+        const sand_meat_2: *NVec = try allocator.create(NVec);
+        defer allocator.destroy(sand_meat_2);
+        _=sand_meat_2.zeros().randomize(&rnd2, 1.0,0.0, 3);
+        _=mot.zeros().randomize(&rnd2, 1.0,0.0, 3);
+
+        const sand_res_rand = mot.sandwich(sand_meat_2);
+        try stdout.print("\n{d:<.3} >>> {d:<.3} = {d:<.3}", .{mot, sand_meat_2, sand_res_rand});
+    }
+
+
 }
 
 pub fn benchmark(stdout: anytype, allocator: Allocator) !void {
@@ -628,7 +660,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         pub const ud: type = std.math.IntFittingRange(0, basis_len - 1);
         ///runtime int needed to fit our maximum subset
         pub const ux: type = std.math.IntFittingRange(0, std.math.pow(u128, 2, basis_len) - 1);
-        
+
         pub const mask_zero = zero_mask;
         pub const mask_pos = pos_mask;
         pub const mask_neg = neg_mask;
@@ -642,7 +674,6 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             None,
         };
         pub const signature_name = blk: {
-
             if (z == 1 and n == 0 and p > 0) {
                 break :blk KnownSignatures.PGAnd;
             }
@@ -1006,7 +1037,11 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             }
                             const neg_powers_mod_2: isize = @intCast(((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1);
                             const value: isize = -2 * neg_powers_mod_2 + 1;
-                            return BladeTerm(){ .value = left.value * right.value * @as(f64, @floatFromInt(value)), .blade = blade };
+                            const ret_val = left.value * right.value * @as(f64, @floatFromInt(value));
+                            if(@round(ret_val) != ret_val) {
+                                @compileLog(comptimePrint("\n\t\tgp lhs val {} * rhs val {} * parity {} = noninteger val {}", .{left.value, right.value, @as(f64, @floatFromInt(value)), ret_val}));
+                            }
+                            return BladeTerm(){ .value = ret_val, .blade = blade };
                         }
                     },
                     .OuterProduct => struct {
@@ -1083,7 +1118,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
             for (0..basis_len) |lhs| {
                 //const lhs_curr_idx = count_bits(lhs_subset & ((0b1 << lhs) - 1));
-                const lhs_value = if (lhs_known_vals != null and lhs_known_vals.?[lhs].known) lhs_known_vals.?[lhs].val else 1;
+                const lhs_value = if (lhs_known_vals != null and lhs_known_vals.?[lhs].known) lhs_known_vals.?[lhs].val else 1.0;
                 for (0..basis_len) |rhs| {
                     const t_lhs: ud = @truncate(lhs);
                     const t_rhs: ud = @truncate(rhs);
@@ -1092,7 +1127,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         continue;
                     }
                     //const rhs_curr_idx = count_bits(rhs_subset & ((0b1 << rhs) - 1));
-                    const rhs_value = if (rhs_known_vals != null and rhs_known_vals.?[lhs].known) rhs_known_vals.?[lhs].val else 1;
+                    const rhs_value = if (rhs_known_vals != null and rhs_known_vals.?[lhs].known) rhs_known_vals.?[lhs].val else 1.0;
 
                     const res = op.eval(.{ .value = lhs_value, .blade = t_lhs }, .{ .value = rhs_value, .blade = t_rhs });
                     ret[lhs][rhs] = res;
@@ -1220,24 +1255,40 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
             //const res_type = @typeInfo(@TypeOf(res)).Pointer.child;
 
+            //std.debug.print("\n\t pre execute res.terms: {d:<.1}, lhs.terms: {d:<.1}, rhs.terms: {d:<.1}, ", .{res.terms, lhs.terms, rhs.terms});
+
             if (is_comptime(len)) {
                 //@compileLog("execute_sparse_vector_op() is in comptime");
+                //const lhs_subset = @typeInfo(@TypeOf(lhs)).Pointer.child.subset_field;
+                //const rhs_subset = @typeInfo(@TypeOf(rhs)).Pointer.child.subset_field;
+                //const res_subset = @typeInfo(@TypeOf(res)).Pointer.child.subset_field;
+                //@compileLog(comptimePrint("lhs size: {} rhs size: {} res size: {}", .{comptime count_bits(lhs_subset), comptime count_bits(rhs_subset), comptime count_bits(res_subset)}));
 
-                const ones: @Vector(len, i32) = @splat(1);
-                const invalid_mask: @Vector(len, i32) = @splat(-1);
-                const zeros: @Vector(len, T) = @splat(0);
+                const ones: @Vector(len, T) = @splat(1.0);
+                const invalid_mask: @Vector(len, i32) = @splat(-1.0);
+                //const zeros: @Vector(len, T) = @splat(0.0);
 
                 const pos: @Vector(len, T) = @splat(1);
                 const neg: @Vector(len, T) = @splat(-1);
 
-                inline for (lhs_masks, rhs_masks, coeff_masks) |lhs_mask, rhs_mask, coeff_mask| {
+                //decreasing delta further doesnt detect near zeros.
+                const delta: @Vector(len, T) = @splat(0.00001);
+
+                inline for (lhs_masks, rhs_masks, coeff_masks) |_lhs_mask, _rhs_mask, _coeff_mask| {
+                    const lhs_mask: @Vector(_lhs_mask.len, i32) = _lhs_mask;
+                    const rhs_mask: @Vector(_lhs_mask.len, i32) = _rhs_mask;
+                    const coeff_mask: @Vector(_lhs_mask.len, T) = _coeff_mask;
                     const invalid = comptime blk: {
-                        break :blk @reduce(.And, lhs_mask == invalid_mask) or @reduce(.And, rhs_mask == invalid_mask) or @reduce(.And, coeff_mask == zeros);
+                        //@compileLog(comptimePrint("lhs_mask type: {}, rhs_mask type: {}, coeff_mask type: {}", .{@TypeOf(lhs_mask), @TypeOf(rhs_mask), @TypeOf(coeff_mask)}));
+                        break :blk @reduce(.And, lhs_mask == invalid_mask) or @reduce(.And, rhs_mask == invalid_mask) or @reduce(.And, @abs(coeff_mask) < delta);
                     };
                     if (!invalid) {
                         //@compileLog(comptimePrint("\nlhs mask: {d: <3.0}, rhs_mask: {d: <3.0}, coeff_mask: {d: <3.0}", .{ lhs_mask, rhs_mask, coeff_mask }));
+
+                        //std.debug.print("\ncoeff_mask == zeros is {}, reduce: {}", .{@as(@Vector(len, T), @splat(@as(f64, 2.0))) * coeff_mask == coeff_mask, @reduce(.And, @as(@Vector(len, T), @splat(@as(f64, 2.0))) * coeff_mask == coeff_mask)});
                         const first = @shuffle(DataType, lhs.terms, ones, lhs_mask);
                         const second = @shuffle(DataType, rhs.terms, ones, rhs_mask);
+                        //std.debug.print("\n\tfirst: {d: <.1} second: {d: <.1}, coeff: {}", .{first, second, coeff_mask});
                         if (comptime @reduce(.And, coeff_mask == pos)) {
                             res.terms += first * second;
                         } else if (comptime @reduce(.And, coeff_mask == neg)) {
@@ -1245,6 +1296,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         } else {
                             res.terms += first * second * coeff_mask;
                         }
+                        //std.debug.print("\n\tres.terms: {d:<.1}", .{res.terms});
                     }
                 }
             } else {
@@ -1303,11 +1355,11 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             comptime var coeff_mask: [len]T = .{0} ** len;
             comptime var opr_mask: [len]i32 = .{-1} ** len;
             const one: ux = 0b1;
-            for(0..basis_len) |res_blade| {
+            for (0..basis_len) |res_blade| {
                 const result_blade: ud = @truncate(res_blade);
-                if(res_subset & (one << result_blade) == 0) {
+                if (res_subset & (one << result_blade) == 0) {
                     continue;
-                } 
+                }
                 const term = inv[result_blade];
                 const coeff = term.mult;
                 const opr_blade: ud = @truncate(term.opr);
@@ -1321,13 +1373,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
             const cf_mask: @Vector(len, T) = coeff_mask;
             const operand_mask: @Vector(len, i32) = opr_mask;
-            return comptime .{operand_mask, cf_mask};
+            return comptime .{ operand_mask, cf_mask };
         }
 
         pub fn unary_execute_sparse_vector_op(opr: anytype, res: anytype, comptime masks: anytype, comptime len: usize, comptime DataType: type) void {
             const opr_mask = masks[0];
             const coeff_mask = masks[1];
-            
+
             //const ones: @Vector(len, i32) = @splat(1);
             //const invalid_mask: @Vector(len, i32) = @splat(-1);
             const zeros: @Vector(len, T) = @splat(0);
@@ -1456,6 +1508,44 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return self;
                 }
 
+                pub fn randomize(self: *Self, gen: *Random, stddev: T, mean: T, terms_to_randomize: anytype) *Self {
+                    const random_terms_left: i32 = comptime blk: {
+                        switch(@typeInfo(@TypeOf(terms_to_randomize))) {
+                            .Int, .ComptimeInt => {
+                                break :blk @max(0, @min(terms_to_randomize, Self.num_terms));
+                            },
+
+                            .Float, .ComptimeFloat => {
+                                break :blk @max(0, @min(@as(T, @ceil(terms_to_randomize * @as(T, @floatFromInt(Self.num_terms)))), Self.num_terms));
+                            },
+                            else => {
+                                @compileError(comptimePrint("non int or float passwed to multivector.randomize()! type: {}, info: {}", .{@TypeOf(terms_to_randomize), @typeInfo(@TypeOf(terms_to_randomize))}));
+                            }
+                        }
+                    };
+                    var randomized_terms: @Vector(Self.num_terms, bool) = @splat(false);
+                    for(0..random_terms_left) |_| {
+                        while(true) {
+                            const next_term = gen.intRangeAtMost(u32, 0, Self.num_terms-1);
+                            if(randomized_terms[next_term] == false) {
+                                randomized_terms[next_term] = true;
+                                break; 
+                            } else {
+                                continue;
+                            }
+                        }
+                    }
+                    for(0..Self.num_terms) |i| {
+                        const should_randomize: bool = randomized_terms[i];
+                        if(should_randomize == false) {
+                            continue;
+                        }
+                        
+                        self.terms[i] = gen.floatNorm(T) * stddev + mean;
+                    }
+                    return self;
+                }
+
                 pub fn set_to(self: *Self, source: *Self) *Self {
                     @memcpy(self.terms[0..Self.Algebra.basis_len], source.terms[0..Self.Algebra.basis_len]);
                     return self;
@@ -1467,7 +1557,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     _: std.fmt.FormatOptions,
                     writer: anytype,
                 ) !void {
-                    try writer.writeAll("Multivector: {");
+                    //try writer.writeAll("Multivector: {");
+                    try writer.print("Multivector ({b}): ", .{Self.subset_field});
+                    try writer.writeAll("{");
                     var has_written_before: bool = false;
                     for (0..num_terms) |i| {
                         const term = nvec.terms[i];
@@ -1569,19 +1661,19 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     comptime var _rhs_mask: @Vector(len, i32) = @splat(-1);
                     comptime {
                         const one: ux = 0b1;
-                        for(0..basis_len) |res_blade| {
+                        for (0..basis_len) |res_blade| {
                             const result_blade: ud = @truncate(res_blade);
-                            if(res_set & (one << result_blade) == 0) {
+                            if (res_set & (one << result_blade) == 0) {
                                 continue;
-                            } 
+                            }
                             const left_idx = count_bits(left_set & ((one << result_blade) -% 1));
                             const right_idx = count_bits(right_set & ((one << result_blade) -% 1));
                             const res_idx = count_bits(res_set & ((one << result_blade) -% 1));
 
-                            if(left_set & (one << result_blade) != 0) {
+                            if (left_set & (one << result_blade) != 0) {
                                 _lhs_mask[res_idx] = left_idx;
                             }
-                            if(right_set & (one << result_blade) != 0) {
+                            if (right_set & (one << result_blade) != 0) {
                                 _rhs_mask[res_idx] = right_idx;
                             }
                         }
@@ -1616,17 +1708,50 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     //return ret_ptr;
                 }
 
-                pub fn sub(lhs: *Self, rhs: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
+                pub fn sub(lhs: anytype, rhs: anytype, res: anytype) *Self {
+                    const left_type: type = @typeInfo(@TypeOf(lhs)).Pointer.child;
+                    const right_type: type = @typeInfo(@TypeOf(rhs)).Pointer.child;
+                    const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+
+                    const left_set: ux = comptime blk: {
+                        break :blk left_type.subset_field;
                     };
-                    inline for (0..num_terms) |i| {
-                        result.*.terms[i] = lhs.*.terms[i] - rhs.*.terms[i];
+                    const right_set: ux = comptime blk: {
+                        break :blk right_type.subset_field;
+                    };
+                    const res_set: ux = comptime blk: {
+                        break :blk res_type.subset_field;
+                    };
+                    const len = comptime count_bits(res_set);
+
+                    comptime var _lhs_mask: @Vector(len, i32) = @splat(-1);
+                    comptime var _rhs_mask: @Vector(len, i32) = @splat(-1);
+                    comptime {
+                        const one: ux = 0b1;
+                        for (0..basis_len) |res_blade| {
+                            const result_blade: ud = @truncate(res_blade);
+                            if (res_set & (one << result_blade) == 0) {
+                                continue;
+                            }
+                            const left_idx = count_bits(left_set & ((one << result_blade) -% 1));
+                            const right_idx = count_bits(right_set & ((one << result_blade) -% 1));
+                            const res_idx = count_bits(res_set & ((one << result_blade) -% 1));
+
+                            if (left_set & (one << result_blade) != 0) {
+                                _lhs_mask[res_idx] = left_idx;
+                            }
+                            if (right_set & (one << result_blade) != 0) {
+                                _rhs_mask[res_idx] = right_idx;
+                            }
+                        }
                     }
-                    return result;
+                    const lhs_mask = _lhs_mask;
+                    const rhs_mask = _rhs_mask;
+                    const zero: @Vector(len, T) = @splat(0);
+
+                    res.terms = @shuffle(T, lhs.terms, zero, lhs_mask) - @shuffle(T, rhs.terms, zero, rhs_mask);
+
+                    return res;
                 }
 
                 pub fn mul_scalar(nvec: *Self, scalar: anytype, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
@@ -1636,9 +1761,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             .ptr => break :blk res_data.ptr,
                         }
                     };
-                    for (0..num_terms) |i| {
-                        result.terms[i] = nvec.terms[i] * scalar;
-                    }
+                    result.terms = nvec.terms * scalar;
                     return result;
                 }
 
@@ -1997,11 +2120,12 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 ///subset invariant
                 pub fn reverse(self: *Self) *Self {
                     const one: ux = 0b1;
-                    inline for (0..Self.Algebra.basis_len) |i| {
-                        if (Self.subset_field & (one << @as(ud, @truncate(i))) != 0) {
+                    inline for (0..Self.Algebra.basis_len) |blade| {
+                        if (Self.subset_field & (one << @as(ud, @truncate(blade))) != 0) {
+                            const i = count_bits(Self.subset_field & (one << @as(ud, @truncate(blade))) -% 1);
                             const mult: T = comptime blk: {
-                                var x: usize = i & ~1;
-                                x /= 2;
+                                var x: usize = blade & ~one;
+                                x >>= 1;
                                 if (x & 1 == 0) {
                                     break :blk 1.0;
                                 }
@@ -2013,12 +2137,12 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return self;
                 }
 
-                const SubsetResultEnum = enum { 
-                    into, 
-                    //minimum, 
-                    mvec, 
-                    //infer 
-                    };
+                const SubsetResultEnum = enum {
+                    into,
+                    //minimum,
+                    mvec,
+                    //infer
+                };
 
                 const SubsetResult = union(SubsetResultEnum) {
                     /// forces
@@ -2035,7 +2159,10 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     stack_alloc,
                 };
                 pub fn DataResult(comptime sbset_res: SubsetResult) type {
-                    return union(DataResultEnum) { ptr: switch(sbset_res){.into=>*MVecSubset(sbset_res.into), .mvec=>*MVecSubset(Alg.NVec.subset_field)}, allocator: *Allocator, stack_alloc };
+                    return union(DataResultEnum) { ptr: switch (sbset_res) {
+                        .into => *MVecSubset(sbset_res.into),
+                        .mvec => *MVecSubset(Alg.NVec.subset_field),
+                    }, allocator: *Allocator, stack_alloc };
                 }
 
                 pub fn DualResult(comptime res: SubsetResult, comptime data: DataResult(res)) type {
@@ -2114,7 +2241,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         x.zeros();
                         return x;
                     }
-                    if(std.meta.activeTag(data) == DataResultEnum.stack_alloc) {
+                    if (std.meta.activeTag(data) == DataResultEnum.stack_alloc) {
                         const x: Res = undefined;
                         x.zeros();
                         return x;
@@ -2143,15 +2270,28 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         }
                     };
 
-                    inline for (0..Self.Algebra.basis_len) |i| {
-                        const mult: T = comptime blk: {
-                            if (i & 1 == 0) {
-                                break :blk -1.0;
+                    const len = comptime count_bits(@TypeOf(result).subset_field);
+                    var _coeffs: @Vector(len, T) = undefined;
+                    comptime {
+                        const one: ud = 0b1;
+                        var i = 0;
+                        for (0..basis_len) |blade| {
+                            const blade_t: ux = @truncate(blade);
+                            if (Self.subset_field & (one << blade_t) == 0) {
+                                continue;
                             }
-                            break :blk 1.0;
-                        };
-                        result.terms[i] = mult * self.terms[i];
+                            var val = 1.0;
+                            if (blade & 1) {
+                                val = -1.0;
+                            }
+                            _coeffs[i] = val;
+                            i += 1;
+                        }
                     }
+                    const coeffs = _coeffs;
+
+                    result.terms = coeffs * self.terms;
+
                     return result;
                 }
 
@@ -2163,20 +2303,26 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn magnitude_squared(self: *Self) T {
                     @setEvalBranchQuota(100000);
-                    var scalar: T = 0;
-                    inline for (0..Self.Algebra.basis_len) |lhs| {
-                        inline for (0..Self.Algebra.basis_len) |rhs| {
-                            //we only want to consider the blades that result in a scalar
-                            if (Self.Algebra.mask_zero & lhs & rhs == 0 and lhs ^ rhs == 0) { //should be collapsed at comptime
-                                const cayley_elem = comptime blk: {
-                                    break :blk Self.Algebra.gp_cayley[lhs][rhs];
-                                };
-                                scalar += cayley_elem.value * self.terms[rhs] * self.terms[lhs];
-                            }
-                        }
-                    }
+                    //var scalar: T = 0;
 
-                    return scalar;
+                    var gp_res = Self{.terms = undefined};
+                    
+                    //_= self.gp(self, gp_res.zeros());
+                    return @reduce(.Add, self.gp(self, gp_res.zeros()).terms);
+
+                    //inline for (0..Self.Algebra.basis_len) |lhs| {
+                    //    inline for (0..Self.Algebra.basis_len) |rhs| {
+                    //        //we only want to consider the blades that result in a scalar
+                    //        if (Self.Algebra.mask_zero & lhs & rhs == 0 and lhs ^ rhs == 0) { //should be collapsed at comptime
+                    //            const cayley_elem = comptime blk: {
+                    //                break :blk Self.Algebra.gp_cayley[lhs][rhs];
+                    //            };
+                    //            scalar += cayley_elem.value * self.terms[rhs] * self.terms[lhs];
+                    //        }
+                    //    }
+                    //}
+                    // 
+                    //return scalar;
                 }
 
                 pub fn magnitude(self: *Self) T {
@@ -2186,6 +2332,56 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 pub fn normalize(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
                     return self.mul_scalar(1.0 / self.magnitude(), res_type, res_data);
                 }
+
+                //in non degenerate algebras only squares of blades are scalars,
+                //in degenerate algebras the only non squares that equal 0 are degenerate blades
+                //
+                //for bivector B:
+                //if B ** 2 = -1 then e^tB = cos(t) + Bsin(t) = rotor
+                //if B ** 2 = 0 then e^tB = 1 + tB = motor
+                //if B ** 2 = 1 then e^tB = cosh(t) + Bsinh(t) = boost
+                //e^x = 1 + x^1/1! + x^2/2! + x^3/3! + ...
+                //pub fn exp(self: *Self, coeff: T) NVec {
+                //    var res = 
+                //}
+
+                pub fn copy(self: *Self, comptime res_type: type) res_type {
+                    var cop = res_type{.terms = undefined};
+                    _=cop.zeros();
+                    _=@TypeOf(cop).add(&cop, self, &cop);
+                    //@memcpy(&cop.terms, &self.terms);
+                    return cop;
+                }
+
+                pub fn sandwich(bread: *Self, meat: anytype) NVec {
+                    //const stdout = std.io.getStdOut().writer();
+                    //try stdout.print("\nbread: {}", .{bread});
+                    var other_slice = bread.copy(Self);
+                    //try stdout.print("\nother_slice = bread.copy(Self) = {}", .{other_slice});
+                    _ = other_slice.reverse();
+                    //try stdout.print("\nother_slice.reverse(): {}", .{other_slice});
+                    const meat_cop = meat.copy(NVec);
+                    //try stdout.print("\nmeat_cop: {}", .{meat_cop});
+                    var ret = NVec{.terms = @splat(0)};
+                    _=ret.zeros();
+
+                    //try stdout.print("\nret.zeros(): {}", .{ret});
+
+
+
+                    _=bread.gp(&meat_cop, &ret);
+                    
+                    //try stdout.print("\n{} gp {} = {}", .{bread, meat_cop, ret});
+
+                    var ret2 = NVec{.terms = @splat(0)};
+
+                    _=ret.gp(&other_slice, &ret2);
+
+                    //try stdout.print("\n({} gp {}) gp {} = {}", .{bread, meat_cop, other_slice, ret2});
+
+                    return ret2;
+                }
+
             };
             return ret;
         }
