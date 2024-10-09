@@ -7,6 +7,7 @@ const Random = std.Random;
 const comptimePrint = std.fmt.comptimePrint;
 const BoundedArray = std.BoundedArray;
 const meta = std.meta;
+const debug = std.debug;
 
 const builtin = @import("builtin");
 
@@ -160,6 +161,7 @@ pub fn main() !void {
         defer allocator.destroy(sand_meat_2);
         _=sand_meat_2.zeros().randomize(&rnd2, 1.0,0.0, 3);
         _=mot.zeros().randomize(&rnd2, 1.0,0.0, 3);
+        _=mot.normalize(.ptr, .{.ptr=mot});
 
         const sand_res_rand = mot.sandwich(sand_meat_2);
         try stdout.print("\n{d:<.3} >>> {d:<.3} = {d:<.3}", .{mot, sand_meat_2, sand_res_rand});
@@ -1001,12 +1003,16 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         ///pretty sure its 100% possible to get runtime and compile time GA expression generation and optimization
         /// done using the exact same infrastructure, so im structuring operations after something like an expression parser
         const Operation = enum {
+            //binary
             GeometricProduct,
             OuterProduct,
             InnerProduct,
             RegressiveProduct,
+            SandwichProduct,
 
+            //unary
             Dual,
+            Reverse,
 
             pub fn n_ary(self: @This()) comptime_int {
                 return switch (self) {
@@ -1014,7 +1020,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     .OuterProduct => 2,
                     .InnerProduct => 2,
                     .RegressiveProduct => 2,
+                    .SandwichProduct => 2,
                     .Dual => 1,
+                    .Reverse => 1,
                 };
             }
 
@@ -1090,12 +1098,40 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         }
                     },
 
+                    //execution is something like first * first * second * coeff
+                    .SandwichProduct => struct {
+                        pub fn eval() BladeTerm() {
+                            //const lhs = left.blade;
+                            //const rhs = right.blade;
+                            //const gp = Operation.GeometricProduct.BladeOp();
+                            //const reverse = Operation.Reverse.BladeOp();
+                            //const ret = gp.eval(gp.eval(left, right), reverse.eval(left));
+                        }
+                    },
+
                     .Dual => struct {
                         pub fn eval(us: BladeTerm()) BladeTerm() {
                             const squares = us.blade & pseudoscalar_blade;
                             return .{ .value = us.value * (-2 * ((squares & neg_mask) ^ count_flips(us.blade, pseudoscalar_blade) & 1)) + 1, .blade = us.blade ^ pseudoscalar_blade };
                         }
                     },
+
+                    .Reverse => struct {
+                        pub fn eval(us: BladeTerm()) BladeTerm() {
+                            const blade: ud = @truncate(us.blade);
+                            const one: ux = 0b1;
+                            const mult: T = comptime blk: {
+                                var x: usize = blade & ~one;
+                                x >>= 1;
+                                if (x & 1 == 0) {
+                                    break :blk 1.0;
+                                }
+                                break :blk -1.0;
+                            };
+                            return BladeTerm(){.blade = blade, .val = mult};
+                        }
+                    }
+                    
                 };
             }
         };
@@ -1666,8 +1702,18 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             if (res_set & (one << result_blade) == 0) {
                                 continue;
                             }
+                            //left_set = 0b01011101, if res_blade = 101 (5)
+                            //then if (0b01011101 & (0b1 << 101 = 0b100000) != 0 (true)),
+                            //then the index in left for blade 101 is:
+                            //count_bits(0b01011101 & (0b100000 -% 1 = 0b011111) = 0b00011101) = 4
+                            //which is correct
+                            
+                            //may not exist
                             const left_idx = count_bits(left_set & ((one << result_blade) -% 1));
                             const right_idx = count_bits(right_set & ((one << result_blade) -% 1));
+
+                            //must exist, and if an operand idx exists this is >= that
+                            //assuming res is a superset of lhs.subset_field | rhs.subset_field
                             const res_idx = count_bits(res_set & ((one << result_blade) -% 1));
 
                             if (left_set & (one << result_blade) != 0) {
@@ -1682,7 +1728,10 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     const rhs_mask = _rhs_mask;
                     const zero: @Vector(len, T) = @splat(0);
 
-                    res.terms = @shuffle(T, lhs.terms, zero, lhs_mask) + @shuffle(T, rhs.terms, zero, rhs_mask);
+                    const left = @shuffle(T, lhs.terms, zero, lhs_mask);
+                    const right = @shuffle(T, rhs.terms, zero, rhs_mask);
+
+                    res.terms = left + right;
 
                     return res;
 
@@ -1761,7 +1810,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             .ptr => break :blk res_data.ptr,
                         }
                     };
-                    result.terms = nvec.terms * scalar;
+                    result.terms = nvec.terms * @as(@Vector(Self.num_terms, T), @splat(scalar));
                     return result;
                 }
 
@@ -2118,13 +2167,15 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 //}
 
                 ///subset invariant
-                pub fn reverse(self: *Self) *Self {
+                /// 0 1 10, 11, 100, 101, 110, 111
+                /// +,+,-,-,+,+,-,-,+,+,...
+                pub fn revert(self: *Self) *Self {
                     const one: ux = 0b1;
                     inline for (0..Self.Algebra.basis_len) |blade| {
                         if (Self.subset_field & (one << @as(ud, @truncate(blade))) != 0) {
                             const i = count_bits(Self.subset_field & (one << @as(ud, @truncate(blade))) -% 1);
                             const mult: T = comptime blk: {
-                                var x: usize = blade & ~one;
+                                var x: usize = count_bits(blade); //this is correct
                                 x >>= 1;
                                 if (x & 1 == 0) {
                                     break :blk 1.0;
@@ -2136,6 +2187,29 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     }
                     return self;
                 }
+
+                //TODO: figure out return semantics api that doesnt suck ass to use and to write
+                //pub fn reverse(self: *Self) Self {
+                //    const result: *Self = blk: {
+                //        switch(res_type) {
+                //            .alloc_new => break :blk try res_data.alloc_new.create(Self),
+                //            .ptr => break :blk res_data.ptr,
+                //        }
+                //    };
+                //
+                //}
+
+                pub fn invert(self: *Self) *Self {
+                    _=self.revert();
+                    const mag = self.magnitude_squared();
+                    var x = self.copy(Self);
+                    _=x.mul_scalar(1.0 / mag, .ptr, .{.ptr = self});
+                    return self;
+                }
+
+                //pub fn inverse(self: *Self) Self {
+                // 
+                //}
 
                 const SubsetResultEnum = enum {
                     into,
@@ -2308,21 +2382,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     var gp_res = Self{.terms = undefined};
                     
                     //_= self.gp(self, gp_res.zeros());
-                    return @reduce(.Add, self.gp(self, gp_res.zeros()).terms);
+                    const cop = self.copy(Self);
+                    return @reduce(.Add, self.gp(&cop, gp_res.zeros()).terms);
 
-                    //inline for (0..Self.Algebra.basis_len) |lhs| {
-                    //    inline for (0..Self.Algebra.basis_len) |rhs| {
-                    //        //we only want to consider the blades that result in a scalar
-                    //        if (Self.Algebra.mask_zero & lhs & rhs == 0 and lhs ^ rhs == 0) { //should be collapsed at comptime
-                    //            const cayley_elem = comptime blk: {
-                    //                break :blk Self.Algebra.gp_cayley[lhs][rhs];
-                    //            };
-                    //            scalar += cayley_elem.value * self.terms[rhs] * self.terms[lhs];
-                    //        }
-                    //    }
-                    //}
-                    // 
-                    //return scalar;
                 }
 
                 pub fn magnitude(self: *Self) T {
@@ -2346,9 +2408,10 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 //}
 
                 pub fn copy(self: *Self, comptime res_type: type) res_type {
-                    var cop = res_type{.terms = undefined};
+                    var cop = res_type{.terms = @splat(0)};
                     _=cop.zeros();
-                    _=@TypeOf(cop).add(&cop, self, &cop);
+                    var copcop = res_type{.terms = @splat(0)};
+                    _=res_type.add(&copcop, self, &cop);
                     //@memcpy(&cop.terms, &self.terms);
                     return cop;
                 }
@@ -2356,12 +2419,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 pub fn sandwich(bread: *Self, meat: anytype) NVec {
                     //const stdout = std.io.getStdOut().writer();
                     //try stdout.print("\nbread: {}", .{bread});
+                    //var us = bread.copy(NVec);
                     var other_slice = bread.copy(Self);
-                    //try stdout.print("\nother_slice = bread.copy(Self) = {}", .{other_slice});
-                    _ = other_slice.reverse();
-                    //try stdout.print("\nother_slice.reverse(): {}", .{other_slice});
-                    const meat_cop = meat.copy(NVec);
-                    //try stdout.print("\nmeat_cop: {}", .{meat_cop});
+                    //debug.print("\n\tother_slice = bread.copy(Self) = {}", .{other_slice});
+                    _ = other_slice.revert();
+                    //debug.print("\n\tother_slice.revert(): {}", .{other_slice});
+                    //const meat_cop = meat.copy(NVec);
+                    //debug.print("\n\tmeat_cop: {}", .{meat_cop});
                     var ret = NVec{.terms = @splat(0)};
                     _=ret.zeros();
 
@@ -2369,9 +2433,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
 
 
-                    _=bread.gp(&meat_cop, &ret);
+                    _=bread.gp(meat, &ret);
                     
-                    //try stdout.print("\n{} gp {} = {}", .{bread, meat_cop, ret});
+                    //std.debug.print("\n\t{} gp {} = {}", .{bread, meat, ret});
 
                     var ret2 = NVec{.terms = @splat(0)};
 
