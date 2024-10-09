@@ -165,7 +165,12 @@ pub fn main() !void {
 
         const sand_res_rand = mot.sandwich(sand_meat_2);
         try stdout.print("\n{d:<.3} >>> {d:<.3} = {d:<.3}", .{mot, sand_meat_2, sand_res_rand});
+
+        const exp_res = mot.exp(10);
+        try stdout.print("\ne ^ {d:<.3} = {d:<.3}", .{mot, exp_res});
     }
+
+
 
 
 }
@@ -283,8 +288,8 @@ inline fn is_comptime(val: anytype) bool {
 }
 
 pub fn factorial(n: anytype) @TypeOf(n) {
-    var result = 1;
-    var k = n;
+    var result: @TypeOf(n) = 1;
+    var k: @TypeOf(n) = n;
     while (k > 1) {
         result *= k;
         k -= 1;
@@ -1442,10 +1447,12 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 const Self: type = @This();
                 pub const ResTypes = enum {
                     alloc_new,
+                    stack_alloc,
                     ptr,
                 };
                 pub const ResSemantics = union {
                     alloc_new: Allocator,
+                    stack_alloc: void,
                     ptr: *Self,
                 };
 
@@ -1672,6 +1679,23 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     }
                 }
 
+                ///TODO: maybe i can do some kind of callback pass in for non invariant subset operations
+                pub fn GetStandardRes(comptime res_type: ResTypes) type {
+                    return switch(res_type) {
+                        .alloc_new => *Self,
+                        .stack_alloc => Self,
+                        .ptr => *Self
+                    };
+                }
+
+                pub inline fn get_standard_res(comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    return switch(res_type) {
+                        .alloc_new => try res_data.alloc.new.create(Self),
+                        .stack_alloc => Self{.terms=@splat(0)},
+                        .ptr => res_data.ptr
+                    };
+                }
+
                 pub fn add(lhs: anytype, rhs: anytype, res: anytype) @TypeOf(res) { //comptime lhs_type: type, lhs: *lhs_type, comptime rhs_type: type, rhs: *rhs_type, comptime ret_type: type, ret_ptr: *ret_type) *ret_type {
                     //if((@hasField(left_type, "Blades") == false or @hasField(right_type, "Blades") == false)) {
                     //    @compileError("YOU CANT JUST PASS ANYTHING INTO ADD()");
@@ -1803,13 +1827,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return res;
                 }
 
-                pub fn mul_scalar(nvec: *Self, scalar: anytype, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+
+                pub fn mul_scalar(nvec: *Self, scalar: anytype, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    var result = get_standard_res(res_type, res_data);
                     result.terms = nvec.terms * @as(@Vector(Self.num_terms, T), @splat(scalar));
                     return result;
                 }
@@ -1829,6 +1849,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         break :blk res_type.subset_field;
                     };
 
+                    @setEvalBranchQuota(10000000);
+
                     const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.GeometricProduct.BladeOp(), null, null);
                     //tell the table inverter the res size, then we can expect it to return an array with comptime known size
                     const res_size = comptime count_bits(res_set);
@@ -1838,13 +1860,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return res;
                 }
 
-                pub fn gp_inv(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn gp_inv(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
 
                     inline for (0..Self.num_terms) |res_blade| { //find every mult pair that produces this blade
                         inner: inline for (0..Self.num_terms) |prod_idx| {
@@ -1871,13 +1888,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn gp_handrolled(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn gp_handrolled(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
                     const res = &result.terms;
                     const b = &right.terms;
                     const a = &left.terms;
@@ -1902,13 +1914,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn gp_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn gp_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
 
                     inline for (0..Self.Algebra.basis_len) |lhs| {
                         inline for (0..Self.Algebra.basis_len) |rhs| {
@@ -1923,13 +1930,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn gp_better(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn gp_better(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
 
                     //inline for(0..Self.Algebra.basis_len) |blade| {
                     //    var val: f64 = 0;
@@ -1954,13 +1956,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn gp_not_unrolled(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn gp_not_unrolled(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
 
                     for (0..Self.Algebra.basis_len) |lhs| {
                         for (0..Self.Algebra.basis_len) |rhs| {
@@ -1996,13 +1993,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
                 }
 
-                pub fn op_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn op_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
 
                     inline for (0..Self.Algebra.basis_len) |lhs| {
                         inline for (0..Self.Algebra.basis_len) |rhs| {
@@ -2041,13 +2033,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
                 }
 
-                pub fn ip_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn ip_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
 
                     inline for (0..Self.Algebra.basis_len) |lhs| {
                         inline for (0..Self.Algebra.basis_len) |rhs| {
@@ -2103,13 +2090,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
                 }
 
-                pub fn rp_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn rp_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
 
                     inline for (0..Self.Algebra.basis_len) |lhs| {
                         inline for (0..Self.Algebra.basis_len) |rhs| {
@@ -2123,13 +2105,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn grade_project(self: *Self, grade: usize, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = comptime blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn grade_project(self: *Self, grade: usize, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
+
                     inline for (0..Self.Algebra.basis_len) |i| {
                         if (count_bits(i) == grade) { //theres a better way to do this, the next elem of the same grade is 2^ith indices next
                             result.terms[i] = self.terms[i];
@@ -2201,10 +2179,10 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 pub fn invert(self: *Self) *Self {
                     _=self.revert();
-                    const mag = self.magnitude_squared();
-                    var x = self.copy(Self);
-                    _=x.mul_scalar(1.0 / mag, .ptr, .{.ptr = self});
-                    return self;
+                    //const mag = self.magnitude_squared();
+                    //var x = self.copy(Self);
+                    //_=x.mul_scalar(1.0 / mag, .ptr, .{.ptr = self});
+                    return self.normalize(.ptr, .{.ptr=self});
                 }
 
                 //pub fn inverse(self: *Self) Self {
@@ -2336,13 +2314,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn involution(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
-                    const result: *Self = comptime blk: {
-                        switch (res_type) {
-                            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                            .ptr => break :blk res_data.ptr,
-                        }
-                    };
+                pub fn involution(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                    const result = get_standard_res(res_type, res_data);
 
                     const len = comptime count_bits(@TypeOf(result).subset_field);
                     var _coeffs: @Vector(len, T) = undefined;
@@ -2391,7 +2364,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return @sqrt(@abs(self.magnitude_squared()));
                 }
 
-                pub fn normalize(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) *Self {
+                pub fn normalize(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
                     return self.mul_scalar(1.0 / self.magnitude(), res_type, res_data);
                 }
 
@@ -2444,6 +2417,27 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     //try stdout.print("\n({} gp {}) gp {} = {}", .{bread, meat_cop, other_slice, ret2});
 
                     return ret2;
+                }
+
+                pub fn exp(self: *Self, terms: usize) NVec {
+                    //1 + x + (x^2)/2! + (x^3)/3! + (x^4)/4! + ...
+                    var ret = NVec{.terms = @splat(0)};
+                    const cop = self.copy(NVec);
+                    ret.terms[0] = 1.0;
+                    for(1..terms) |t| {
+                        const denominator: f64 = @floatFromInt(factorial(t));
+                        var term = self.copy(NVec);
+
+                        for(1..t) |_| {
+                            var tst = NVec{.terms=@splat(0)};
+                            term = NVec.gp(&term,&cop, &tst).*;
+                        }
+
+                        var tst = NVec{.terms=@splat(0)};
+                        var rhs = term.mul_scalar((1.0/denominator), .stack_alloc, .{.ptr=&tst});
+                        ret = ret.add(&rhs, &tst).*;
+                    }
+                    return ret;
                 }
 
             };
