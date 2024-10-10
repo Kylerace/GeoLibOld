@@ -166,7 +166,7 @@ pub fn main() !void {
         const sand_res_rand = mot.sandwich(sand_meat_2);
         try stdout.print("\n{d:<.3} >>> {d:<.3} = {d:<.3}", .{mot, sand_meat_2, sand_res_rand});
 
-        const exp_res = mot.exp(10);
+        const exp_res = mot.exp(15);
         try stdout.print("\ne ^ {d:<.3} = {d:<.3}", .{mot, exp_res});
     }
 
@@ -2419,7 +2419,19 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return ret2;
                 }
 
+                fn squares_to_neg_1() bool {
+                    var x = Self{.terms=@splat(1)};
+                    var y = Self{.terms=@splat(1)};
+                    var ret = Self{.terms=@splat(0)};
+                    //var neg_one = Self{.terms=@splat(0)};
+                    return x.gp(&y, &ret).terms[0] == -1.0;
+                }
+
                 pub fn exp(self: *Self, terms: usize) NVec {
+                    if(comptime squares_to_neg_1()) {
+                        const mag = self.magnitude();
+                        return @cos(mag) + self.mul_scalar(@sin(mag), comptime res_type: ResTypes, res_data: ResSemantics)
+                    }
                     //1 + x + (x^2)/2! + (x^3)/3! + (x^4)/4! + ...
                     var ret = NVec{.terms = @splat(0)};
                     const cop = self.copy(NVec);

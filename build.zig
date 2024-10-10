@@ -15,6 +15,18 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    //const gen_exe = b.addExecutable(.{
+    //    .name = "generator_exe",
+    //    .root_source_file = b.path("src/generator.zig"),
+    //    .target = target,
+    //    .optimize = optimize
+    //});
+
+    //const run_gen_exe = b.addRunArtifact(gen_exe);
+    //run_gen_exe.step.dependOn(&gen_exe.step);
+
+    //const output_file = run_gen_exe.addOutputFileArg("generated.zig");
+
     //const lib = b.addStaticLibrary(.{
     //    .name = "PGA",
     //    // In this case the main source file is merely a path, however, in more
