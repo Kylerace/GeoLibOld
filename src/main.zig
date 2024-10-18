@@ -12,6 +12,14 @@ const debug = std.debug;
 const builtin = @import("builtin");
 
 pub fn main() !void {
+
+    @setEvalBranchQuota(10000000);
+    //const alg = Algebra(3, 0, 1, f64);
+
+    try test_stuff();
+}
+
+pub fn test_stuff() !void {
     const stdout = std.io.getStdOut().writer();
 
     //const target = std.Target.zigTriple(target: Target, allocator: Allocator)
@@ -155,6 +163,8 @@ pub fn main() !void {
     var rnd = PRNG.init(4);
     var rnd2 = rnd.random();
 
+    const Bivector = alg.Blade(2);
+
     for(0..10) |_| {
 
         const sand_meat_2: *NVec = try allocator.create(NVec);
@@ -166,8 +176,15 @@ pub fn main() !void {
         const sand_res_rand = mot.sandwich(sand_meat_2);
         try stdout.print("\n{d:<.3} >>> {d:<.3} = {d:<.3}", .{mot, sand_meat_2, sand_res_rand});
 
-        const exp_res = mot.exp(15);
-        try stdout.print("\ne ^ {d:<.3} = {d:<.3}", .{mot, exp_res});
+        const biv: *Bivector = try allocator.create(Bivector);
+        _=biv.zeros().randomize(&rnd2, 1.0, 0.0, 2);
+        //debug.print("\n_____biv is {} before norm, mag is {}", .{biv, biv.magnitude()});
+        _=biv.normalize(.ptr,.{.ptr=biv});
+
+        //debug.print("\n_____biv is {} after norm", .{biv});
+
+        const exp_res = biv.exp(15);
+        try stdout.print("\n\te ^ {d:<.3} = {d:<.3}", .{biv, exp_res});
     }
 
 
@@ -492,6 +509,14 @@ fn even_parity(field: usize, comptime d: comptime_int) usize {
     field ^= field >> 4;
     field &= 0xf;
     return (0x6996 >> field) & 1;
+}
+
+fn cosh(num: anytype) @TypeOf(num) {
+    return 0.5 * (@exp(num) + @exp(-num));
+}
+
+fn sinh(num: anytype) @TypeOf(num) {
+    return 0.5 * (@exp(num) - @exp(-num));
 }
 
 //fn Foo<T>(arg: T) {
@@ -1483,7 +1508,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 pub const num_terms: usize = count_bits(subset);
 
                 ///when converted to MVecSubset this MUST only contain the blades specific to this instance
-                pub const Blade: type = Self.Algebra.BasisBladeEnum;
+                pub const BladeE: type = Self.Algebra.BasisBladeEnum;
                 //pub const Blades: [num_terms]Blade = blk: {
                 //    var ret: [num_terms]Blade = undefined;
                 //    for(0..dyn.len) |i| {
@@ -1527,7 +1552,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 terms: @Vector(num_terms, T),
 
-                pub fn get(self: *Self, comptime res_type: enum { stack, ptr }, blade: Blade) switch (res_type) {
+                pub fn get(self: *Self, comptime res_type: enum { stack, ptr }, blade: BladeE) switch (res_type) {
                     .stack => T,
                     .ptr => *T,
                 } {
@@ -2144,6 +2169,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 //    }
                 //}
 
+
                 ///subset invariant
                 /// 0 1 10, 11, 100, 101, 110, 111
                 /// +,+,-,-,+,+,-,-,+,+,...
@@ -2320,10 +2346,10 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     const len = comptime count_bits(@TypeOf(result).subset_field);
                     var _coeffs: @Vector(len, T) = undefined;
                     comptime {
-                        const one: ud = 0b1;
+                        const one: ux = 0b1;
                         var i = 0;
                         for (0..basis_len) |blade| {
-                            const blade_t: ux = @truncate(blade);
+                            const blade_t: ud = @truncate(blade);
                             if (Self.subset_field & (one << blade_t) == 0) {
                                 continue;
                             }
@@ -2352,11 +2378,14 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     @setEvalBranchQuota(100000);
                     //var scalar: T = 0;
 
-                    var gp_res = Self{.terms = undefined};
-                    
+                    var gp_res = NVec{.terms = undefined};
+                    _=gp_res.zeros();
+
                     //_= self.gp(self, gp_res.zeros());
-                    const cop = self.copy(Self);
-                    return @reduce(.Add, self.gp(&cop, gp_res.zeros()).terms);
+                    var cop = self.copy(Self);
+                    _ = cop.revert();
+                    //return @reduce(.Add, (&cop).gp(self, gp_res).terms);
+                    return (&cop).gp(self, &gp_res).terms[0];
 
                 }
 
@@ -2419,22 +2448,49 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return ret2;
                 }
 
-                fn squares_to_neg_1() bool {
-                    var x = Self{.terms=@splat(1)};
-                    var y = Self{.terms=@splat(1)};
-                    var ret = Self{.terms=@splat(0)};
+                fn get_square(self: *Self) NVec {//TODO: might blow up if something squares to a multivector
+                    var ret = NVec{.terms=@splat(0)};
+
+                    var x = self.copy(NVec);
+                    var y = self.copy(NVec);
                     //var neg_one = Self{.terms=@splat(0)};
-                    return x.gp(&y, &ret).terms[0] == -1.0;
+                    _ = x.gp(&y, &ret);
+                    return ret;
                 }
 
                 pub fn exp(self: *Self, terms: usize) NVec {
-                    if(comptime squares_to_neg_1()) {
-                        const mag = self.magnitude();
-                        return @cos(mag) + self.mul_scalar(@sin(mag), comptime res_type: ResTypes, res_data: ResSemantics)
-                    }
-                    //1 + x + (x^2)/2! + (x^3)/3! + (x^4)/4! + ...
                     var ret = NVec{.terms = @splat(0)};
-                    const cop = self.copy(NVec);
+                    var cop = self.copy(NVec);
+
+                    const square = self.get_square();
+                    if(@reduce(.Add, square.terms) == square.terms[0]) {
+
+                        //debug.print("\n\t{} ^ 2 == {}, a scalar.", .{self, square});
+
+                        const squared_value = square.terms[0];
+                        const alpha = @sqrt(@abs(square.terms[0]));
+
+                        if(squared_value < 0.0) {
+                            _=cop.mul_scalar(@sin(alpha) / alpha, .ptr, .{.ptr=&ret});
+                            ret.terms[0] += @cos(alpha);
+                            //debug.print("\n\t\texp({}) = cos(alpha) + (sin(alpha)/alpha)*self = {} (square is {d:.4}, alpha {d:.4})", .{self, ret, squared_value, alpha});
+                            return ret;
+                        }
+                        if(squared_value > 0.0) {
+                            _=cop.mul_scalar(sinh(alpha) / alpha, .ptr, .{.ptr=&ret});
+                            ret.terms[0] += cosh(alpha);
+                            //debug.print("\n\t\texp({}) = cosh(mag) + (sinh(mag)/mag)*self = {} (square is {}, mag {})", .{self, ret, alpha, mag});
+                            return ret;
+                        }
+                        if(squared_value == 0.0) {
+                            cop.terms[0] += 1.0;
+                            //ebug.print("\n\t\texp({}) = 1 + self = {} (square is {}, mag {})", .{self, ret, alpha, self.magnitude()});
+                            return cop;
+                        }    
+                    }
+                    //debug.print("\n\t{} ^ 2 == {}, not a scalar", .{self, square});
+
+                    //1 + x + (x^2)/2! + (x^3)/3! + (x^4)/4! + ...
                     ret.terms[0] = 1.0;
                     for(1..terms) |t| {
                         const denominator: f64 = @floatFromInt(factorial(t));
@@ -2450,6 +2506,23 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         ret = ret.add(&rhs, &tst).*;
                     }
                     return ret;
+                }
+
+                ///returns true if we are a subset of other, or if our only nonzero indices are in other
+                pub fn is(self: *Self, other: type) bool {
+                    if(comptime Self.subset_field & other.subset_field == Self.subset_field) {
+                        return true;
+                    }
+                    const one: ux = 0b1;
+                    for(0..basis_len) |blade| {
+                        const blade_t: ud = @truncate(blade);
+                        if(other.subset_field & (one << blade_t) != 0 and Self.subset_field & (one << blade_t) != 0) {
+                            if(self.terms[count_bits(Self.subset_field & ((one << blade_t) -% 1))] != 0.0) {
+                                return false;
+                            }
+                        }
+                    }
+                    return true;
                 }
 
             };
@@ -2479,6 +2552,21 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             }
             break :blk void;
         };
+        pub fn Blade(comptime count: anytype) type {
+            var field: ux = 0b0;
+            const one: ux = 0b1;
+            for(0..basis_len) |blade| {
+                const b_idx = one << blade;
+                if(count_bits(blade) == count) {
+                    field |= b_idx;
+                }
+            }
+            if(count_bits(field) != 0) {
+                return MVecSubset(field);
+            }
+            return void;
+        }
+
     };
 
     return alg;
