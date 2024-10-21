@@ -8,15 +8,404 @@ const comptimePrint = std.fmt.comptimePrint;
 const BoundedArray = std.BoundedArray;
 const meta = std.meta;
 const debug = std.debug;
+const ArrayList = std.ArrayList;
 
 const builtin = @import("builtin");
+
+const glfw = @import("mach-glfw");
+const gl = @import("gl");
+
+fn errorCallback(error_code: glfw.ErrorCode, description: [:0]const u8) void {
+    std.log.err("glfw: {}: {s}\n", .{error_code, description});
+}
+
+var procs: gl.ProcTable = undefined;
+
+pub fn HyperTreeElement(comptime _d: usize, comptime D: type) type {
+    return struct {
+        const Self = @This();
+        const d: usize = _d;
+
+        data: D,
+
+    };
+}
+
+//TODO: GA integration
+pub fn HyperSpace(comptime _d: usize, comptime C: type) type {
+    return struct {
+        const Self = @This();
+        const d: usize = _d;
+
+        is_leaf: bool,
+        parent: ?*Self,
+        children: [std.math.pow(usize, 2, d)]?*Self,
+        coords: [d]f64,
+        side_length: f64,
+        contents: ArrayList(C),
+    };
+}
+
+pub fn HyperTree(comptime d: usize) type {
+    return struct {
+        const Self = @This();
+        const Node = HyperSpace(d);
+
+        allocator: Allocator,
+        nodes: ArrayList(Node),
+    };
+}
+
+//idk how to do it in general so for now do only nd pga and only points as contents,
+//and then later do nd pga with i-dimensional contents
+
+
+pub fn PGAPointElement(comptime Alg: type, comptime K: type) type {
+    return struct {
+        const Self = @This();
+        const A = Alg;
+        const Point = Alg.Point;
+
+        location: Point,
+        /// key that consumers of the hypertree can use to interface with it to update our representation of their proxies
+        /// or the other way around
+        id: K,
+    };
+}
+
+pub fn PGAPointElementNode(comptime idx_size: type) type {
+    return struct {
+        const Self = @This();
+        
+        next: idx_size,
+        /// points to our corresponding Element
+        element: idx_size
+    };
+}
+
+pub fn PGAPointHyperNode(comptime idx_size: type) type {
+    return struct {
+        ///points to our first element if we're a leaf or our first child if we're not
+        first: idx_size,
+        element_count: i32, //TODO: convert to be signed thats sizeof(idx_size)
+    };
+}
+
+pub fn PGAPointHyperTree(comptime Alg: type, comptime K: type) type {
+    return struct {
+        const Self = @This();
+
+        const A = Alg;
+        const idx_size: type = u32;
+        const dim = A.p;
+
+        const Node = PGAPointHyperNode(Alg, idx_size);
+        pub const Element = PGAPointElement(A, K);
+        const ElementNode = PGAPointElementNode(idx_size);
+        const HyperPlane: type = A.Plane;
+
+        const children_per_split: usize = std.math.pow(usize, 2, dim);
+
+        allocator: Allocator,
+        nodes: std.ArrayListUnmanaged(Node),
+        elements: std.ArrayListUnmanaged(Element),
+        element_nodes: std.ArrayListUnmanaged(ElementNode),
+        AABB: [2 * dim]HyperPlane,
+
+        elems_to_split: usize,
+        max_depth: usize,
+
+        pub fn init(allocator: Allocator, elems_to_split: usize, max_depth: usize) Self {
+            return Self{
+                allocator,
+                std.ArrayListUnmanaged(Node){},
+                std.ArrayListUnmanaged(Element){},
+                std.ArrayListUnmanaged(ElementNode){},
+                blk: {
+                    var hyperplanes: [2 * dim]HyperPlane = undefined;
+                    for(0..hyperplanes.len) |i| {
+                        _=hyperplanes[i].zeros();
+                    }
+                    const _hyperplanes = hyperplanes;
+                    break :blk _hyperplanes;
+                },
+                elems_to_split,
+                max_depth
+            };
+        }
+
+        pub fn insert_single(self: *Self, to_insert: Element) !void {
+            const ally = self.allocator;
+
+            if(self.nodes.len == 0) {
+                if(self.elems_to_split == 0) {
+                    var new_nodes: [1 + Self.children_per_split]Node = undefined;
+                    
+                } else {
+                    try self.nodes.append()
+                }
+                //try self.nodes.append(ally, Node{0,0});
+
+            }
+        }
+    };
+}
 
 pub fn main() !void {
 
     @setEvalBranchQuota(10000000);
     //const alg = Algebra(3, 0, 1, f64);
 
-    try test_stuff();
+    //const context = glfw.createContext();
+    try create_program();
+}
+
+pub fn create_program() !void {
+    glfw.setErrorCallback(errorCallback);
+    if(!glfw.init(.{})) {
+        debug.print("failed to init GLFW: {any}", .{glfw.getErrorString()});
+        std.process.exit(1);
+    }
+    defer glfw.terminate();
+
+    const window_width: usize = 640;
+    const window_height: usize = 480;
+
+    const window = glfw.Window.create(window_width, window_height, "Test", null, null, .{
+        .context_version_major = gl.info.version_major,
+        .context_version_minor = gl.info.version_minor,
+
+        .opengl_profile = switch(gl.info.api) {
+            .gl => .opengl_core_profile,
+            .gles => .opengl_any_profile,
+            else => comptime unreachable,
+        },
+        .opengl_forward_compat = gl.info.api == .gl,
+    }) orelse {
+        debug.print("failed to create a GLFW window: {any}", .{glfw.getErrorString()});
+        std.process.exit(1);
+    };
+    defer window.destroy();
+
+    glfw.makeContextCurrent(window);
+    defer glfw.makeContextCurrent(null);
+
+    if(!procs.init(glfw.getProcAddress)) return error.InitFailed;
+    gl.makeProcTableCurrent(&procs);
+    defer gl.makeProcTableCurrent(null);
+
+    const shader_source_preamble = switch (gl.info.api) {
+        .gl => (
+            \\#version 410 core
+            \\
+        ),
+        .gles => (
+            \\#version 300 es
+            \\precision highp float;
+            \\
+        ),
+        else => comptime unreachable,
+    };
+    const vertex_shader_source =
+        \\in vec4 a_Position;
+        \\//in vec4 a_Color;
+        \\in vec2 tex_coord;
+        \\
+        \\out vec4 v_Color;
+        \\out vec2 tex_coord_0;
+        \\
+        \\void main() {
+        \\    tex_coord_0 = tex_coord;
+        \\    gl_Position = a_Position;
+        \\    //v_Color = a_Color;
+        \\}
+        \\
+    ;
+    const fragment_shader_source =
+        \\in vec2 tex_coord_0;
+        \\//in vec4 v_Color;
+        \\out vec4 f_Color;
+        \\uniform sampler2D texture1;
+        \\
+        \\void main() {
+        \\    f_Color = texture(texture1, tex_coord_0);
+        \\}
+        \\
+    ;
+
+    // For the sake of conciseness, this example doesn't check for shader compilation/linking
+    // errors. A more robust program would use 'GetShaderiv'/'GetProgramiv' to check for errors.
+    const program = create_program: {
+        const vertex_shader = gl.CreateShader(gl.VERTEX_SHADER);
+        defer gl.DeleteShader(vertex_shader);
+
+        gl.ShaderSource(
+            vertex_shader,
+            2,
+            &[2][*]const u8{ shader_source_preamble, vertex_shader_source },
+            &[2]c_int{ @intCast(shader_source_preamble.len), @intCast(vertex_shader_source.len) },
+        );
+        gl.CompileShader(vertex_shader);
+
+        const fragment_shader = gl.CreateShader(gl.FRAGMENT_SHADER);
+        defer gl.DeleteShader(fragment_shader);
+
+        gl.ShaderSource(
+            fragment_shader,
+            2,
+            &[2][*]const u8{ shader_source_preamble, fragment_shader_source },
+            &[2]c_int{ @intCast(shader_source_preamble.len), @intCast(fragment_shader_source.len) },
+        );
+        gl.CompileShader(fragment_shader);
+
+        const program = gl.CreateProgram();
+
+        gl.AttachShader(program, vertex_shader);
+        gl.AttachShader(program, fragment_shader);
+        gl.LinkProgram(program);
+
+        break :create_program program;
+    };
+    defer gl.DeleteProgram(program);
+
+    gl.UseProgram(program);
+    defer gl.UseProgram(0);
+
+    var vao: c_uint = undefined;
+    gl.GenVertexArrays(1, @ptrCast(&vao));
+    defer gl.DeleteVertexArrays(1, @ptrCast(&vao));
+
+    gl.BindVertexArray(vao);
+    defer gl.BindVertexArray(0);
+
+    var vbo: c_uint = undefined;
+    gl.GenBuffers(1, @ptrCast(&vbo));
+    defer gl.DeleteBuffers(1, @ptrCast(&vbo));
+
+    gl.BindBuffer(gl.ARRAY_BUFFER, vbo);
+    defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
+
+    const Vertex = extern struct { position: [2]f32, color: [3]f32, texture: [2]f32 };
+    // zig fmt: off
+    const vertices = [_]Vertex{
+        .{ .position = .{  -1.0, -1.0 }, .color = .{ 1, 0, 0 }, .texture = .{1, 1} },
+        .{ .position = .{  -1.0 , 1.0 }, .color = .{ 0, 1, 0 }, .texture = .{1, 0}  },
+        .{ .position = .{  -1.0, -1.0 }, .color = .{ 0, 0, 1 }, .texture = .{0, 0}  },
+        .{ .position = .{   1.0,  1.0 }, .color = .{ 1, 1, 0 }, .texture = .{0, 1}  },
+    };
+    // zig fmt: on
+
+    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(vertices)), &vertices, gl.STATIC_DRAW);
+
+
+    debug.print("\nattrib loc (position): {}", .{gl.GetAttribLocation(program, "a_Position")});
+    const position_attrib: c_uint = @intCast(gl.GetAttribLocation(program, "a_Position"));
+    gl.EnableVertexAttribArray(position_attrib);
+    gl.VertexAttribPointer(
+        position_attrib,
+        @typeInfo(@TypeOf(@as(Vertex, undefined).position)).Array.len,
+        gl.FLOAT,
+        gl.FALSE,
+        @sizeOf(Vertex),
+        @offsetOf(Vertex, "position"),
+    );
+    debug.print("\nattrib loc (color): {}", .{gl.GetAttribLocation(program, "a_Color")});
+    debug.print("\nattrib loc (tex_coord): {}", .{gl.GetAttribLocation(program, "tex_coord")});
+
+
+    //const color_attrib: c_uint = @intCast(gl.GetAttribLocation(program, "a_Color"));
+    //gl.EnableVertexAttribArray(color_attrib);
+    //gl.VertexAttribPointer(
+    //    color_attrib,
+    //    @typeInfo(@TypeOf(@as(Vertex, undefined).color)).Array.len,
+    //    gl.FLOAT,
+    //    gl.FALSE,
+    //    @sizeOf(Vertex),
+    //    @offsetOf(Vertex, "color"),
+    //);
+
+    var texture_attrib: c_uint = @intCast(gl.GetAttribLocation(program, "tex_coord"));
+    gl.EnableVertexAttribArray(texture_attrib);
+    gl.VertexAttribPointer(
+        texture_attrib,
+        @typeInfo(@TypeOf(@as(Vertex, undefined).texture)).Array.len,
+        gl.FLOAT,
+        gl.FALSE,
+        @sizeOf(Vertex),
+        @offsetOf(Vertex, "texture"),
+    );
+
+    var sing_ptr = &texture_attrib;
+    const arr_ptr = sing_ptr[0..1];
+    const many_ptr: [*]c_uint = arr_ptr;
+    gl.GenTextures(1, many_ptr);
+    gl.BindTexture(gl.TEXTURE_2D, texture_attrib);
+
+    const color_channels: usize = 4;
+
+    var cpu_pixel_buffer: [window_width * window_height * color_channels]u8 = undefined;
+    for(0..cpu_pixel_buffer.len) |i| {
+        cpu_pixel_buffer[i] = 255;
+    }
+
+    var camera_pos: [4]f64 = undefined;
+    for(0..4) |i| {
+        camera_pos[i] = 0.0;
+    }
+
+
+
+    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, window_width, window_height, 0, gl.RGBA, gl.UNSIGNED_BYTE, &cpu_pixel_buffer);
+    gl.Uniform1i(gl.GetUniformLocation(program, "texture1"), 0);
+
+    main_loop: while (true) {
+        glfw.waitEvents();
+        if (window.shouldClose()) break :main_loop;
+
+        // Update the viewport to reflect any changes to the window's size.
+        const fb_size = window.getFramebufferSize();
+        gl.Viewport(0, 0, @intCast(fb_size.width), @intCast(fb_size.height));
+
+
+
+        // Clear the window.
+        //gl.ClearBufferfv(gl.COLOR, 0, &[4]f32{ 1, 1, 1, 1 });
+
+        // Draw the vertices.
+        gl.ClearColor(0.0,0.0,0.0,1.0);
+
+        gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, window_width, window_height, 0, gl.RGBA, gl.UNSIGNED_BYTE, &cpu_pixel_buffer);
+        gl.GenerateMipmap(gl.TEXTURE_2D);
+
+
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);	// set texture wrapping to GL_REPEAT (default wrapping method)
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        // set texture filtering parameters
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+        gl.BindTexture(gl.TEXTURE_2D, texture_attrib);
+        //glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        gl.DrawArrays(gl.TRIANGLES, 0, vertices.len);
+        
+        // Perform some wizardry that prints a nice little message in the center :)
+        //gl.Enable(gl.SCISSOR_TEST);
+        //const magic: u154 = 0x3bb924a43ddc000170220543b8006ef4c68ad77;
+        //const left = @divTrunc(@as(gl.int, @intCast(fb_size.width)) - 11 * 8, 2);
+        //const bottom = @divTrunc((@as(gl.int, @intCast(fb_size.height)) - 14 * 8) * 2, 3);
+        //var i: gl.int = 0;
+        //while (i < 154) : (i += 1) {
+        //    if (magic >> @intCast(i) & 1 != 0) {
+        //        gl.Scissor(left + @rem(i, 11) * 8, bottom + @divTrunc(i, 11) * 8, 8, 8);
+        //        gl.ClearBufferfv(gl.COLOR, 0, &[4]f32{ 0, 0, 0, 1 });
+        //    }
+        //}
+        //gl.Disable(gl.SCISSOR_TEST);
+
+        window.swapBuffers();
+    }
+
+    //try test_stuff();
 }
 
 pub fn test_stuff() !void {
@@ -163,7 +552,7 @@ pub fn test_stuff() !void {
     var rnd = PRNG.init(4);
     var rnd2 = rnd.random();
 
-    const Bivector = alg.Blade(2);
+    const Bivector = alg.KVector(2);
 
     for(0..10) |_| {
 
@@ -523,7 +912,15 @@ fn sinh(num: anytype) @TypeOf(num) {
 //return arg * 2;
 //}
 
-fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime T: type) type {
+const AlgebraOptions: type = struct {
+    const Self = @This();
+    /// affects whether 1 & 2 forms are 1 & 2 dimensional or d-1 and d-2 dimensional,
+    /// and whether wedge = join or meet
+    dual: bool,
+
+};
+
+fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime T: type, comptime algebra_options: AlgebraOptions) type {
     const _d: usize = _p + _n + _z;
     const basis_size: usize = std.math.pow(usize, 2, _d);
 
@@ -687,6 +1084,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         pub const d: usize = _d;
         pub const basis: [basis_len]BinBlade = bin_basis;
         pub const basis_len: usize = basis_size;
+        pub const alg_options = algebra_options;
 
         ///runtime int needed to fit a single blade
         pub const ud: type = std.math.IntFittingRange(0, basis_len - 1);
@@ -2130,6 +2528,22 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
+                pub fn meet(left: anytype, right: anytype, res: anytype) void {
+                    if(comptime Self.Algebra.alg_options.dual == true) {
+                        return Self.rp(left,right,res);
+                    } else {
+                        return Self.op(left,right,res);
+                    }
+                }
+
+                pub fn join(left: anytype, right: anytype, res: anytype) void {
+                    if(comptime Self.Algebra.alg_options.dual == true) {
+                        return Self.op(left,right,res);
+                    } else {
+                        return Self.rp(left,right,res);
+                    }
+                }
+
                 pub fn grade_project(self: *Self, grade: usize, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
                     const result = get_standard_res(res_type, res_data);
 
@@ -2539,8 +2953,30 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
         pub const NVec = MVecSubset(enums_to_subset(&BasisBlades));
         pub const Plane = blk: {
-            if (p == 3 and z == 1 and n == 0) { // pga
-                break :blk MVecSubset(0b10010110); //&.{0b0001,0b0010,0b0100,0b1000});
+            
+            if (p >= 1 and z == 1 and n == 0) { // pga
+                if(alg_options.dual == true) {
+                    if(d == 2) {
+                        break :blk KVector(2);
+                    } else {
+                        break :blk KVector(p - 2);
+                    }
+                } else {
+                    break :blk KVector(2);
+                }
+                //planes are either the pseudospace (p == 2), so KVector(p + 1), 
+                //or less than the pseudospace (p > 2), so KVector(1)
+                //break :blk KVector(p - 1); //&.{0b0001,0b0010,0b0100,0b1000});
+            }
+            break :blk void;
+        };
+        pub const Point = blk: {
+            if(p >= 1 and z == 1 and n == 0) {
+                if(alg_options.dual == true) {
+                    break :blk KVector(d-1);
+                } else {
+                    break :blk KVector(1);
+                }
             }
             break :blk void;
         };
@@ -2548,11 +2984,11 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             if (p == 3 and z == 1 and n == 0) {
                 //@compileLog("0b1011001101001: ", 0b1011001101001, "enums_to_subset(&.{.s,.e01,.e02,.e03,.e12,.e13,.e23}): ", enums_to_subset(&.{.s,.e01,.e02,.e03,.e12,.e13,.e23}));
                 //s,e01,e02,e03,e12,e13,e23
-                break :blk MVecSubset(0b1011001101001); //&.{0,0b0011,0b0101,0b1001, 0b0110,0b1100});
+                break :blk MVecSubset(KVector(2).subset_field | 1); //&.{0,0b0011,0b0101,0b1001, 0b0110,0b1100});
             }
             break :blk void;
         };
-        pub fn Blade(comptime count: anytype) type {
+        pub fn KVector(comptime count: anytype) type {
             var field: ux = 0b0;
             const one: ux = 0b1;
             for(0..basis_len) |blade| {
@@ -2567,6 +3003,15 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             return void;
         }
 
+        pub const KVectors = blk: {
+            var res: [d]type = undefined;
+            for(0..d) |i| {
+                const dim = i + 1;
+                res[i] = KVector(dim);
+            }
+            const _res = res;
+            break :blk _res;
+        };
     };
 
     return alg;

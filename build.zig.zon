@@ -23,6 +23,10 @@
     // Once all dependencies are fetched, `zig build` no longer requires
     // internet connectivity.
     .dependencies = .{
+        .mach_glfw = .{
+            .path = "mach-glfw-main",
+            //.hash = "12201ae68707aefe54ffb9d8c64721d4a2ac36186f8bd390e4f670033fec6737664a",
+        },
         // See `zig fetch --save <url>` for a command-line interface for adding dependencies.
         //.example = .{
         //    // When updating this field to a new URL, be sure to delete the corresponding
@@ -51,6 +55,11 @@
         //    // actually used.
         //    .lazy = false,
         //},
+        .zigglgen = .{
+            .path = "zigglgen-master",
+            //.url = "git+https://github.com/castholm/zigglgen#33ee1647f577e057ca05dac568101a0f42e590a1",
+            //.hash = "1220c68f8d7e4d24baaa40da9e91b7e480b5ef41489ee147fe535de4d54195ae5c62",
+        },
     },
 
     // Specifies the set of files and directories that are included in this package.

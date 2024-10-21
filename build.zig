@@ -48,6 +48,33 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+
+    const exe_check = b.addExecutable(.{
+        .name = "check_exe",
+        .root_source_file = b.path("src/main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const glfw_dep = b.dependency("mach_glfw", .{ //must match the name declared in .zon
+        .target = target,
+        .optimize = optimize,
+    });
+    const glfw_mod = glfw_dep.module("mach-glfw"); 
+    exe.root_module.addImport("mach-glfw", glfw_mod);
+    exe_check.root_module.addImport("mach-glfw", glfw_mod);
+
+    const gl_bindings = @import("zigglgen").generateBindingsModule(b, .{
+        .api = .gl,
+        .version = .@"4.1",
+        .profile = .core,
+        .extensions = &.{ .ARB_clip_control, .NV_scissor_exclusive },
+    });
+
+    // Import the generated module.
+    exe.root_module.addImport("gl", gl_bindings);
+    exe_check.root_module.addImport("gl", gl_bindings);
+
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
     // step when running `zig build`).
@@ -75,6 +102,9 @@ pub fn build(b: *std.Build) void {
     // This will evaluate the `run` step rather than the default, which is "install".
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    const check = b.step("check", "check if we compile");
+    check.dependOn(&exe_check.step);
 
     const waf = b.addWriteFiles();
     _ = waf.addCopyFile(exe.getEmittedAsm(), "main.asm");
