@@ -66,7 +66,7 @@ pub fn PGAPointElement(comptime Alg: type, comptime K: type) type {
         const A = Alg;
         const Point = Alg.Point;
 
-        location: Point,
+        location: PointArr(f64, A.p),
         /// key that consumers of the hypertree can use to interface with it to update our representation of their proxies
         /// or the other way around
         id: K,
@@ -77,18 +77,72 @@ pub fn PGAPointElementNode(comptime idx_size: type) type {
     return struct {
         const Self = @This();
         
-        next: idx_size,
+
+        
+        next: i32,
         /// points to our corresponding Element
         element: idx_size
     };
 }
 
-pub fn PGAPointHyperNode(comptime idx_size: type) type {
+//TODO: rethink idx_size
+pub fn PGAPointHyperNode(comptime _: type) type {
     return struct {
         ///points to our first element if we're a leaf or our first child if we're not
-        first: idx_size,
+        /// set to -1 if an empty leaf (must be able to because element nodes must have next be nullable)
+        first: i32,
         element_count: i32, //TODO: convert to be signed thats sizeof(idx_size)
     };
+}
+
+pub fn StackNode(comptime T: type, comptime M: type) type {
+    return struct{
+        data: T,
+        metadata: M,
+    };
+}
+
+pub fn Stack(comptime T: type, comptime M: type) type {
+    return struct {
+        const Self = @This();
+        pub const Node = StackNode(T, M);
+        stack: std.ArrayList(Node),
+        pub fn init(allocator: Allocator) Self {
+            return Self {
+                .stack = std.ArrayList(Node).init(allocator)
+            };
+        } 
+        pub fn push(self: *Self, input: Node) !void {
+            try self.stack.append(input);
+        }
+        pub fn pop(self: *Self) ?Node {
+            return self.stack.popOrNull();
+        }
+        pub fn len(self: *Self) usize {
+            return self.stack.items.len;
+        }
+    };
+}
+
+pub fn PointArr(comptime T: type, comptime dim: usize) type {
+    return struct {
+        const Self = @This();
+        arr: [dim]T,
+
+        pub fn zeros() Self {
+            var arr: [dim]T = undefined;
+            for(0..dim) |i| {
+                arr[i] = 0;
+            }
+            return Self {
+                .arr = arr
+            };
+        }
+    };
+}
+
+pub fn AABBArr(comptime T: type, comptime dim: usize) type {
+    return PointArr(T, 2 * dim);
 }
 
 pub fn PGAPointHyperTree(comptime Alg: type, comptime K: type) type {
@@ -99,7 +153,7 @@ pub fn PGAPointHyperTree(comptime Alg: type, comptime K: type) type {
         const idx_size: type = u32;
         const dim = A.p;
 
-        const Node = PGAPointHyperNode(Alg, idx_size);
+        const Node = PGAPointHyperNode(idx_size);
         pub const Element = PGAPointElement(A, K);
         const ElementNode = PGAPointElementNode(idx_size);
         const HyperPlane: type = A.Plane;
@@ -110,54 +164,390 @@ pub fn PGAPointHyperTree(comptime Alg: type, comptime K: type) type {
         nodes: std.ArrayListUnmanaged(Node),
         elements: std.ArrayListUnmanaged(Element),
         element_nodes: std.ArrayListUnmanaged(ElementNode),
-        AABB: [2 * dim]HyperPlane,
+        ///[axis, axis + Self.dim] = lower and higher boundary points of the AABB in that axis
+        AABB: AABBArr(f64, dim),
+        ///this[axis] = length of AABB[axis + dim] - AABB[axis]
+        sides: PointArr(f64, dim), 
 
         elems_to_split: usize,
         max_depth: usize,
 
-        pub fn init(allocator: Allocator, elems_to_split: usize, max_depth: usize) Self {
+        pub fn init(allocator: Allocator, elems_to_split: usize, max_depth: usize, center: PointArr(f64, Self.dim), dims: PointArr(f64, Self.dim)) Self {
+            var aabb: AABBArr(f64, Self.dim) = AABBArr(f64, Self.dim).zeros();
+            var sides: PointArr(f64, dim) = PointArr(f64, dim).zeros();
+            for(0..Self.dim) |axis| {
+                aabb.arr[axis] = center.arr[axis] - 0.5 * dims.arr[axis];
+                aabb.arr[axis + Self.dim] = center.arr[axis] + 0.5 * dims.arr[axis];
+                sides.arr[axis] = aabb.arr[axis + dim] - aabb.arr[axis];
+            }
             return Self{
-                allocator,
-                std.ArrayListUnmanaged(Node){},
-                std.ArrayListUnmanaged(Element){},
-                std.ArrayListUnmanaged(ElementNode){},
-                blk: {
-                    var hyperplanes: [2 * dim]HyperPlane = undefined;
-                    for(0..hyperplanes.len) |i| {
-                        _=hyperplanes[i].zeros();
-                    }
-                    const _hyperplanes = hyperplanes;
-                    break :blk _hyperplanes;
-                },
-                elems_to_split,
-                max_depth
+                .allocator =allocator,
+                .nodes = std.ArrayListUnmanaged(Node){},
+                .elements = std.ArrayListUnmanaged(Element){},
+                .element_nodes = std.ArrayListUnmanaged(ElementNode){},
+                .AABB = aabb,
+                .sides = sides,
+                .elems_to_split = elems_to_split,
+                .max_depth = max_depth
             };
+        }
+
+        pub fn traverse_leaves(self: *Self, point: PointArr(f64, dim)) !ArrayList(Self.Node) {
+
+            //TODO: ensure that point is within self.AABB, 
+            for(0..dim) |axis| {
+                if(point.arr[axis] < self.AABB.arr[axis] or point.arr[axis] > self.AABB.arr[axis + dim]) {
+                    @panic("point is not inside of our root AABB! die fool!");
+                }
+            }
+
+            var stack_buffer: [50]Self.Node = undefined;
+            var fba = std.heap.FixedBufferAllocator.init(&stack_buffer);
+            const fba_alloc = fba.allocator();
+
+            //bounding box, power (of 2)
+            const StackMetadata: type = struct{PointArr(f64, dim), f64};
+            //const FullStackNode: type = StackNode(Self.Node, StackMetadata);
+
+            var stack = Stack(Self.Node, StackMetadata).init(fba_alloc);
+            var leaves = ArrayList(Self.Node).init(self.allocator);
+            //our set of hyperplanes = (the latter half of AABB).map(x => x/2)
+            const _hyperplanes: PointArr(f64, dim) = .{.arr = undefined};
+            for(0..dim) |axis| {
+                _hyperplanes.arr[axis] = self.AABB.arr[axis] + self.sides.arr[axis] / 2; //== 2 ** 1
+            }
+
+            stack.push(.{self.nodes[0], .{_hyperplanes, 1}});
+
+            while(stack.len() > 0) {
+                const stack_node = stack.pop().?;
+                const hypernode = stack_node.data;
+                const tuple = stack_node.metadata;
+                const hyperplanes = tuple.@"0";
+                const power = tuple.@"1";
+                
+                if(hypernode.element_count != -1) {
+                    if(hypernode.element_count > 0) {
+                        try leaves.append(hypernode);
+                    }
+                } else {
+                    //now find the child that the point must be in, doing n inlined checks 
+                    const first_child = hypernode.first;
+                    var idx_offset: idx_size = 0;
+                    var plane_offset: PointArr(f64, dim) = undefined; //for points we can just mutate hyperplanes[axis] but for 
+                    //@memcpy(&plane_offset.arr, hyperplanes.arr);
+                    //non null forms we need to be able to iterate through multiple children
+                    inline for(0..dim) |axis| {
+                        var diff: idx_size = 0;
+                        plane_offset[axis] = -0.5;//hyperplanes.arr[axis] - 0.5 / std.math.pow(f64,2, power + 1);
+                        if(point.arr[axis] > hyperplanes.arr[axis]) {
+                            diff = 1 << axis;
+                            plane_offset[axis] += 1.0;
+                        }
+                        plane_offset[axis] /= std.math.pow(f64, 2, power + 1);
+                        plane_offset[axis] += hyperplanes.arr[axis];
+                        idx_offset += diff;
+                    }
+
+                    stack.push(.{.data = self.nodes[first_child + idx_offset], .metadata = .{plane_offset, power + 1}});
+                }
+            }
+
+            return leaves;
         }
 
         pub fn insert_single(self: *Self, to_insert: Element) !void {
             const ally = self.allocator;
+            const point = to_insert.location;
 
-            if(self.nodes.len == 0) {
-                if(self.elems_to_split == 0) {
-                    var new_nodes: [1 + Self.children_per_split]Node = undefined;
-                    
-                } else {
-                    try self.nodes.append()
+            for(0..dim) |axis| {
+                if(point.arr[axis] < self.AABB.arr[axis] or point.arr[axis] > self.AABB.arr[axis + dim]) {
+                    @panic("point is not inside of our root AABB! die fool!");
                 }
-                //try self.nodes.append(ally, Node{0,0});
-
             }
+
+            var stack_buffer: [50 * @sizeOf(Self.Node)]u8 = undefined;
+            var fba = std.heap.FixedBufferAllocator.init(stack_buffer[0..50]);
+            const fba_alloc = fba.allocator();
+
+            //bounding box, power (of 2)
+            const StackMetadata: type = struct{PointArr(f64, dim), f64};
+            //const FullStackNode: type = StackNode(Self.Node, StackMetadata);
+
+            var stack = Stack(idx_size, StackMetadata).init(fba_alloc);
+            //var leaves = ArrayList(Self.Node).init(self.allocator);
+            //our set of hyperplanes = (the latter half of AABB).map(x => x/2)
+            var _hyperplanes: PointArr(f64, dim) = .{.arr = undefined};
+            for(0..dim) |axis| {
+                _hyperplanes.arr[axis] = self.AABB.arr[axis] + self.sides.arr[axis] / 2; //== 2 ** 1
+            }
+
+            try self.elements.append(ally, to_insert);
+            const element_idx: u32 = @as(u32, @truncate(self.elements.items.len)) - 1;
+
+            try stack.push(.{.data=0, .metadata=.{_hyperplanes, 1}});
+
+            while(stack.len() > 0) {
+                const stack_node = stack.pop().?;
+                const hypernode_idx = stack_node.data;
+                const hypernode = &self.nodes.items[hypernode_idx];
+                const tuple = stack_node.metadata;
+                var hyperplanes = tuple.@"0";
+                const power = tuple.@"1";
+                
+                if(hypernode.element_count != -1) { //leaf
+                    const new_elem_node: ElementNode = .{.next = hypernode.first, .element = element_idx};
+                    try self.element_nodes.append(self.allocator, new_elem_node);
+                    hypernode.first = @as(i32, @intCast(@as(u32, @truncate(self.element_nodes.items.len)))) - 1;
+                    hypernode.element_count += 1;
+                        
+                    if(hypernode.element_count >= self.elems_to_split and @as(f64, @floatFromInt(self.max_depth)) > power) { //split
+                        
+                        try self.handle_split(hypernode_idx, &hyperplanes, power);
+
+
+                        //try stack.push(.{.data = self.nodes})
+                    } 
+                } else {
+                    //now find the child that the point must be in, doing n inlined checks 
+                    const first_child = hypernode.first;
+                    var idx_offset: i32 = 0;
+                    var plane_offset: PointArr(f64, dim) = undefined; //for points we can just mutate hyperplanes[axis] but for 
+                    //non null forms we need to be able to iterate through multiple children
+                    inline for(0..dim) |axis| {
+                        //we organize our children by essentially a hamming code,
+                        //each axis is responsible for the axis'th bit of the offset
+                        //to retrieve the correct child. if point[axis] < hyperplane[axis]
+                        //the bit is 0 and otherwise 1. if every axis does this then we
+                        //will find the correct child for any dimension
+                        //var diff: idx_size = 0;
+
+                        //if point[axis] < hyperplane[axis] we need to move back by half a unit, 
+                        //otherwise move forward by half a unit
+                        plane_offset.arr[axis] = -1;
+                        if(point.arr[axis] > hyperplanes.arr[axis]) {
+                            idx_offset += 1 << axis;
+                            plane_offset.arr[axis] = 1; 
+                        }
+                        plane_offset.arr[axis] *= self.sides.arr[axis] / std.math.pow(f64, 2, power + 1);
+                        plane_offset.arr[axis] += hyperplanes.arr[axis];
+                        //idx_offset += diff;
+                    }
+
+                    try stack.push(.{.data = @bitCast(first_child + idx_offset), .metadata = .{plane_offset, power + 1}});
+                }
+            }
+        }
+
+        ///hyperplanes and power are accurate for the node doing the splitting, not the children
+        pub fn handle_split(self: *Self, node_idx: idx_size, hyperplanes_to_split: *PointArr(f64, dim), depth: f64) !void {
+            const ally = self.allocator;
+
+            const first_child_idx = self.nodes.items.len;
+            try self.nodes.resize(ally, self.nodes.items.len + children_per_split);
+
+            const splitting_node: *Node = &self.nodes.items[node_idx];
+
+            defer splitting_node.first = @intCast(first_child_idx);
+            defer splitting_node.element_count = -1; //turn into a non leaf
+
+            var children_need_to_split: bool = false;
+
+            var new_nodes = self.nodes.items[first_child_idx..first_child_idx + children_per_split];
+            var hyperplanes: PointArr(f64, dim) = undefined;
+            inline for(0..dim) |axis| {
+                hyperplanes.arr[axis] = hyperplanes_to_split.arr[axis] + self.sides.arr[axis] / std.math.pow(f64, 2, depth + 1);
+            }
+
+            var num_elements: usize = 0;
+            var curr_element_node_idx: idx_size = @bitCast(splitting_node.first);
+            var next_element_node: *ElementNode = &self.element_nodes.items[curr_element_node_idx];
+            while(true) {
+                num_elements += 1;
+
+                const curr_next = next_element_node.next;
+                const curr_element = &self.elements.items[next_element_node.element];
+
+                var idx_offset: idx_size = 0;
+                inline for(0..dim) |axis| {
+                    if(curr_element.location.arr[axis] > hyperplanes.arr[axis]) {
+                        idx_offset += 1 << axis;
+                    }
+                }
+                //const x = std.mem.split(u8, "asdasdad, asdasda", ",");
+                //insert into linked list
+                next_element_node.next = new_nodes[idx_offset].first;
+                new_nodes[idx_offset].first = curr_next;
+                new_nodes[idx_offset].element_count += 1;
+                if(new_nodes[idx_offset].element_count >= self.elems_to_split and depth < @as(f64, @floatFromInt(self.max_depth))) {
+                    //debug.print("\n\tAAAAAAAAAAAAAA TOO MANY CHILDREN IN NODE CREATED IN handle_split()");
+                    children_need_to_split = true;
+                }
+
+                if(curr_next == -1) {
+                    break;
+                }
+                curr_element_node_idx = @bitCast(curr_next);
+                next_element_node = &self.element_nodes.items[curr_element_node_idx];
+            }
+
+            if(children_need_to_split == true) {
+                for(0..children_per_split) |i| {
+                    if(new_nodes[i].element_count >= self.elems_to_split) {
+                        try self.handle_split(@as(idx_size, @truncate(self.nodes.items.len - children_per_split + i)), &hyperplanes, depth + 1);
+                    }
+                }
+            }
+
+            //hyperplanes 
         }
     };
 }
+
+pub fn Mover(A: type) type {
+
+    return struct {
+        pub const Alg = A;
+
+        location: Alg.Point,
+        radius: f64,
+        mass: f64,
+    };
+}
+
 
 pub fn main() !void {
 
     @setEvalBranchQuota(10000000);
     //const alg = Algebra(3, 0, 1, f64);
+    //const alg = Algebra(3,0,1,f64, .{});
+    //const Tree = PGAPointHyperTree(alg, usize);
+    //var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    //const allocator = gpa.allocator();
+    //defer _ = allocator.deinit();
+    //const PointB = PointArr(f64, 3);
+    //const AABBB = AABBArr(f64, 3);
+    //var tree: Tree = Tree.init(allocator, 10, 10, PointB.zeros(), PointB{.arr=.{10,10,10}});
+    //const Element = Tree.Element;
+    //const to_insert = Element{.location = .{.arr = .{1.1,2.1,3}}, .id = 0};
+    //try tree.insert_single(to_insert);
 
-    //const context = glfw.createContext();
-    try create_program();
+    const d: usize = comptime 3;
+    const pow2 = comptime std.math.pow(usize, 2, d);
+    const alg = Algebra(d, 0, 1, f64, .{.dual = true});
+    const Point = alg.KVector(d);
+    const Line = alg.KVector(d-1);
+    const Motor = alg.Motor;
+    const ux = alg.ux;
+    const ud = alg.ud;
+    const point_set = Point.subset_field;
+
+    var vertices: [pow2]Point = undefined;
+    const num_edges = comptime std.math.pow(usize, 2, d) * (d + 1);
+    var edges: [num_edges]Line = undefined;
+
+    debug.print("\nedges[0]: {}\n", .{edges[0]});
+
+    const test64: @Vector(6, f64) = @splat(1);
+    const test32: @Vector(6, f32) = @splat(2);
+    //_=test64;
+    _=test32;
+    const test3 = test64 + @as(@Vector(6, f64), @splat(2));
+    _=test3;
+
+    const test64_7: @Vector(7, f64) = undefined;
+    const test32_7: @Vector(7, f32) = undefined;
+    _=test64_7;
+    _=test32_7;
+    const test64_8: @Vector(8, f64) = undefined;
+    const test32_8: @Vector(8, f32) = undefined;
+    _=test64_8;
+    _=test32_8;
+    const test64_9: @Vector(9, f64) = undefined;
+    const test32_9: @Vector(9, f32) = undefined;
+    _=test64_9;
+    _=test32_9;
+
+    const origin_blade: ud = @truncate(std.math.pow(usize, 2, d + 1) - 2);
+    //3 dims -> e0,e1,e2,e3 = e123 = 0b1110
+    for(0..pow2) |i| {
+
+        const one: ux = 0b1;
+        for(0..alg.basis_len) |blade| {
+            const res_blade: ud = @truncate(blade);
+            if(point_set & (one << res_blade) == 0) {
+                continue;
+            }
+            const idx = count_bits(point_set & ((one << res_blade) -% 1));
+            var val: f64 = -0.5;
+            if(res_blade == origin_blade) {
+                val = 1;
+            } else if(i & (one << @as(ud, @truncate(idx))) > 0) {
+                val = 0.5;
+            } 
+            vertices[i].terms[idx] = val;
+        }
+
+        debug.print("index {}: {}", .{i, vertices[i]});
+    }
+
+    debug.print("\n", .{});
+    debug.print("\nLINE SUBSET: {b}, len: {}", .{Line.subset_field, count_bits(Line.subset_field)});
+    var tst: Line = undefined;
+    tst.terms = @splat(1.0);
+
+    debug.print("\nLINE ALL 1s: {}", .{&tst});
+
+    debug.print("\nPOINT SUBSET {b}, len: {}", .{Point.subset_field, count_bits(Point.subset_field)});
+
+    var edge_i: usize = 0;
+    for(0..pow2) |i| {
+        for(i..pow2) |j| {
+            if(i == j or (i^j)&(i^j-1) != 0) {
+                continue;
+            }
+            _=&edges[edge_i].zeros();
+            const p_i = &vertices[i];
+            const p_j = &vertices[j];
+            _=p_i.gp(p_j, &edges[edge_i]);
+            var res: Line = undefined;
+            _=res.zeros();
+            _=p_i.gp_old2(p_j, &res);
+            debug.print("\n NEW: edge index {}: {} = {} gp {}", .{edge_i, &edges[edge_i], p_i, p_j});
+            debug.print("\n\t OLD: edge index {}: {}", .{edge_i, res});
+            edge_i += 1;
+        }
+    }
+
+    var state: Motor = undefined;
+    _=state.zeros();
+    state.terms[0] = 1;
+    state.terms[4] = 1;
+    state.terms[5] = 1.3;
+    state.terms[6] = 0.5;
+
+    //var attach
+
+    //try create_program();
+    
+}
+
+pub fn forques(comptime Alg: type, M: *Alg.Motor, _: *Alg.KVector(2), attach: *Alg.Point, point_in_body: *Alg.Point) Alg.Motor {
+    const Motor = Alg.Motor;
+    const M_rev = M.copy(@truncate(~0)).revert();
+    const g: Motor = blk: {
+        var G: Motor = undefined;
+        G.zeros();
+        G.get(.e02).* = -9.81;
+        var cop: Alg.NVec = undefined;
+        break :blk (&M_rev).sandwich(&G).dual(&cop).copy(Motor.subset_field);
+    };
+    //what if all ops had the default return type determined by the blades returned by their cayley tables
+    var hooke: Motor = M_rev.sandwich(attach).rp(point_in_body).mul_scalar(1.05, .stack_alloc, null).copy(Motor);
+    var ret: Motor = undefined;
+    _=(&hooke).add(&g, &ret);
+    return ret;
+    //var gravity = 
 }
 
 pub fn create_program() !void {
@@ -916,13 +1306,26 @@ const AlgebraOptions: type = struct {
     const Self = @This();
     /// affects whether 1 & 2 forms are 1 & 2 dimensional or d-1 and d-2 dimensional,
     /// and whether wedge = join or meet
-    dual: bool,
-
+    dual: bool = false,
+    chars: []const struct {u8, usize} = &.{.{'e', 0}},
+    ordering: [3]isize = .{0,1,-1},
 };
 
 fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime T: type, comptime algebra_options: AlgebraOptions) type {
     const _d: usize = _p + _n + _z;
     const basis_size: usize = std.math.pow(usize, 2, _d);
+
+    var _chars: [basis_size]u8 = undefined;
+    var char_i = 0;
+    const option_chars = algebra_options.chars;
+
+    for(0..basis_size) |i| {
+        if(char_i < option_chars.len - 1 and option_chars[char_i + 1] == i) {
+            char_i += 1;
+        }
+        _chars[i] = option_chars[char_i].@"0";
+    }
+    const chars = _chars;
 
     const bin_basis: [basis_size]usize = comptime blk: {
         var ret: [basis_size]usize = undefined;
@@ -948,17 +1351,41 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
     var _zero_mask: usize = 0;
     var _pos_mask: usize = 0;
     var _neg_mask: usize = 0;
+    var curr_metric = algebra_options.ordering[0];
+    var metric_i = 0;
 
     for (0.._d) |b| { // bitfield gen
-        if (z_bits > 0) {
-            z_bits -= 1;
-            _zero_mask |= (0b1 << b);
-        } else if (p_bits > 0) {
-            p_bits -= 1;
-            _pos_mask |= (0b1 << b);
-        } else if (n_bits > 0) {
-            n_bits -= 1;
-            _neg_mask |= (0b1 << b);
+        if(curr_metric == 0) {
+            if (z_bits > 0) {
+                z_bits -= 1;
+                _zero_mask |= (0b1 << b);
+                continue;
+            } else {
+                metric_i += 1;
+                curr_metric = algebra_options.ordering[metric_i]; 
+            }
+        }
+        if(curr_metric > 0) {
+
+            if (p_bits > 0) {
+                p_bits -= 1;
+                _pos_mask |= (0b1 << b);
+                continue;
+            }  else { 
+                metric_i += 1;
+                curr_metric = algebra_options.ordering[metric_i]; 
+            }
+        }
+        if(curr_metric < 0) {
+
+            if (n_bits > 0) {
+                n_bits -= 1;
+                _neg_mask |= (0b1 << b);
+                continue;
+            } else {
+                metric_i += 1;
+                curr_metric = algebra_options.ordering[metric_i];
+            }
         }
     }
 
@@ -1341,17 +1768,27 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             }
         }
 
-        fn GenBlade() type {
+        fn GenBlade(comptime f: ux) type {
 
             //we want .fields,
             //var blade = @typeInfo(enum(isize){});
-            var fields: [Alg.basis_len]std.builtin.Type.EnumField = undefined;
+            const num_blades: usize = count_bits(f);
+            var fields: [num_blades]std.builtin.Type.EnumField = undefined;
             var decls = [_]std.builtin.Type.Declaration{};
             //const existing_fields = @typeInfo(Self.ResTypes).Enum.fields;
             //@compileLog( "@typeInfo(Self.ResTypes).Enum.fields) = ", existing_fields, "existing_fields[0].name: ", existing_fields[0].name);
-            for (&fields, 0..Alg.basis_len) |*field, i| {
+            const one: ud = 0b1;
+            var field_i: usize = 0;
+            for (0..Alg.basis_len) |i| {
                 var name1: [:0]const u8 = "";
                 var n_i = 0;
+                const blade_t: ud = @truncate(i);
+                if(f & (one << blade_t) == 0) {
+                    continue;
+                }
+                const field = &fields[field_i];
+                defer field_i += 1;
+
                 if (i == 0) {
 
                     //name1[n_i] = 's';
@@ -1359,7 +1796,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     n_i += 1;
                 } else {
                     //name1[n_i] = 'e';
-                    name1 = name1 ++ "e";
+                    name1 = name1 ++ chars[i];
                     n_i += 1;
 
                     for (0..Alg.d + 1) |n_j| {
@@ -1392,7 +1829,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             return ret;
         }
 
-        pub const BasisBladeEnum = GenBlade(); //TODO: array?
+        pub const BasisBladeEnum = GenBlade(@truncate(~0)); //TODO: array?
         pub const BasisBlades: [basis_size]BasisBladeEnum = blk: {
             var ret: [basis_size]BasisBladeEnum = undefined;
             for (0..basis_size) |i| {
@@ -1410,15 +1847,19 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
         //}
 
-        //define a datatype that is total over the functions you want
-        //and then place it in a tensor
-        fn BladeTerm() type {
-            return struct {
-                const Us: type = @This();
-                value: T,
-                blade: ux,
-            };
+        pub fn Execution() type {
+
         }
+
+        pub fn Map() type {
+
+        }
+
+        const BladeTerm = struct {
+            const Us = @This();
+            value: T,
+            blade: ux,
+        };
 
         //multiplication like binary operations map a tensor of dim [a,b,c,...f]
         //and a tensor of dim[g,h,i,j,...,m] to a concatenated [a,b,...f,g,h,i,...m]
@@ -1437,10 +1878,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             InnerProduct,
             RegressiveProduct,
             SandwichProduct,
+            Add,
+            Sub,
 
             //unary
             Dual,
             Reverse,
+            Involution,
 
             pub fn n_ary(self: @This()) comptime_int {
                 return switch (self) {
@@ -1451,6 +1895,39 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     .SandwichProduct => 2,
                     .Dual => 1,
                     .Reverse => 1,
+                    .Involution => 1,
+                    .Add => 2,
+                    .Sub => 2,
+                };
+            }
+
+            pub fn Codomain(self: @This()) type {
+                return switch(self) {
+                    .GeometricProduct => BladeTerm,
+                    .OuterProduct => BladeTerm,
+                    .InnerProduct => BladeTerm,
+                    .RegressiveProduct => BladeTerm,
+                    .SandwichProduct => BladeTerm,
+                    .Dual => BladeTerm,
+                    .Reverse => BladeTerm,
+                    .Involution => BladeTerm,
+                    .Add => struct{BladeTerm, ?BladeTerm},
+                    .Sub => struct{BladeTerm, ?BladeTerm},
+                };
+            }
+
+            pub fn max_output_size(self: @This()) comptime_int {
+                return switch(self) {
+                    .GeometricProduct => 1,
+                    .OuterProduct => 1,
+                    .InnerProduct => 1,
+                    .RegressiveProduct => 1,
+                    .SandwichProduct => 1,
+                    .Dual => 1,
+                    .Reverse => 1,
+                    .Involution => 1,
+                    .Add => 2,
+                    .Sub => 2,
                 };
             }
 
@@ -1463,13 +1940,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             pub fn BladeOp(self: @This()) type {
                 return switch (self) {
                     .GeometricProduct => struct {
-                        pub fn eval(left: BladeTerm(), right: BladeTerm()) BladeTerm() {
+                        pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.GeometricProduct) {
                             const lhs = left.blade;
                             const rhs = right.blade;
                             const squares = lhs & rhs;
                             const blade: ux = lhs ^ rhs;
                             if (squares & zero_mask != 0) {
-                                return BladeTerm(){ .value = 0, .blade = 0 };
+                                return BladeTerm{ .value = 0, .blade = 0 };
                             }
                             const neg_powers_mod_2: isize = @intCast(((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1);
                             const value: isize = -2 * neg_powers_mod_2 + 1;
@@ -1477,11 +1954,15 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             if(@round(ret_val) != ret_val) {
                                 @compileLog(comptimePrint("\n\t\tgp lhs val {} * rhs val {} * parity {} = noninteger val {}", .{left.value, right.value, @as(f64, @floatFromInt(value)), ret_val}));
                             }
-                            return BladeTerm(){ .value = ret_val, .blade = blade };
+                            if(@abs(ret_val) > 10.0) {
+                                @compileLog(comptimePrint("\n\t------ret_val from .GeometricProduct is greater than 10: {}", ret_val));
+                            }
+                            //@compileLog(comptimePrint("\nret_val = {}", .{ret_val}));
+                            return BladeTerm{ .value = ret_val, .blade = blade };
                         }
                     },
                     .OuterProduct => struct {
-                        pub fn eval(left: BladeTerm(), right: BladeTerm()) BladeTerm() {
+                        pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.OuterProduct) {
                             const lhs = left.blade;
                             const rhs = right.blade;
                             const squares = lhs & rhs;
@@ -1493,7 +1974,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         }
                     },
                     .InnerProduct => struct {
-                        pub fn eval(left: BladeTerm(), right: BladeTerm()) BladeTerm() {
+                        pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.InnerProduct) {
                             const lhs = left.blade;
                             const rhs = right.blade;
                             const squares = lhs & rhs;
@@ -1511,15 +1992,14 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     },
 
                     .RegressiveProduct => struct {
-                        pub fn eval(left: BladeTerm(), right: BladeTerm()) BladeTerm() {
+                        pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.RegressiveProduct) {
                             const lhs = left.blade ^ pseudoscalar_blade;
                             const rhs = right.blade ^ pseudoscalar_blade;
                             const squares = lhs & rhs;
-                            if (squares != 0) {
-                                return;
-                            }
-
                             const blade = lhs ^ rhs ^ pseudoscalar_blade;
+                            if (squares != 0) {
+                                return .{ .value = 0, .blade = blade };
+                            }
 
                             const value = -2 * (((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1) + 1;
                             return .{ .value = value, .blade = blade };
@@ -1528,24 +2008,24 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                     //execution is something like first * first * second * coeff
                     .SandwichProduct => struct {
-                        pub fn eval() BladeTerm() {
-                            //const lhs = left.blade;
-                            //const rhs = right.blade;
-                            //const gp = Operation.GeometricProduct.BladeOp();
-                            //const reverse = Operation.Reverse.BladeOp();
-                            //const ret = gp.eval(gp.eval(left, right), reverse.eval(left));
+                        pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.SandwichProduct) {
+                            //const bread = left.blade;
+                            //const meat = right.blade;
+                            const gp = Operation.GeometricProduct.BladeOp();
+                            const reverse = Operation.Reverse.BladeOp();
+                            return gp.eval(gp.eval(left, right), reverse.eval(left));
                         }
                     },
 
                     .Dual => struct {
-                        pub fn eval(us: BladeTerm()) BladeTerm() {
+                        pub fn eval(us: BladeTerm) Codomain(.Dual) {
                             const squares = us.blade & pseudoscalar_blade;
                             return .{ .value = us.value * (-2 * ((squares & neg_mask) ^ count_flips(us.blade, pseudoscalar_blade) & 1)) + 1, .blade = us.blade ^ pseudoscalar_blade };
                         }
                     },
 
                     .Reverse => struct {
-                        pub fn eval(us: BladeTerm()) BladeTerm() {
+                        pub fn eval(us: BladeTerm) Codomain(.Reverse) {
                             const blade: ud = @truncate(us.blade);
                             const one: ux = 0b1;
                             const mult: T = comptime blk: {
@@ -1556,25 +2036,56 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                                 }
                                 break :blk -1.0;
                             };
-                            return BladeTerm(){.blade = blade, .val = mult};
+                            return BladeTerm{.blade = blade, .val = mult};
+                        }
+                    },
+
+                    .Involution => struct {
+                        pub fn eval(us: BladeTerm) Codomain(.Involution) {
+                            const blade: ud = @truncate(us.blade);
+                            return .{.blade = blade, .val = if(blade & 1) -1.0 else 1.0};
+                        }
+                    },
+
+                    .Add => struct {
+                        pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.Add) {
+                            if(left.blade == right.blade) {
+                                return .{BladeTerm{.blade = left.blade, .value = left.value + right.value}, null};
+                            }
+                            return .{left, right};
+                        }
+                    },
+                    
+                    .Sub => struct {
+                        pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.Sub) {
+                            if(left.blade == right.blade) {
+                                return .{BladeTerm{.blade = left.blade, .value = left.value - right.value}, null};
+                            }
+                            return .{left, BladeTerm{.blade = right.blade, .value = -right.value}};
                         }
                     }
-                    
                 };
             }
         };
 
-        const CayleyReturn = struct { fst: [basis_size][basis_size]BladeTerm(), snd: [basis_size][basis_size]ProdTerm, third: [basis_size]usize };
+        pub fn ProdTerms(comptime nm: usize) type {
+            return struct {
+                const_val: T,
+                oprs: [nm]ux,
+            };
+        }
+
+        const CayleyReturn = struct { fst: [basis_size][basis_size]BladeTerm, snd: [basis_size][basis_size]ProdTerm, third: [basis_size]usize };
 
         //step 1: create the masked cayley space
         //if this is generic to the transformation we need to tell it how to do each operand blade n-tuple
-        //pub fn masked_cayley_space(comptime operand_subsets: []comptime_int, comptime operations: []Operation) void {}
         pub fn cayley_table(lhs_subset: ux, rhs_subset: ux, op: anytype, lhs_known_vals: ?[basis_size]struct { known: bool, val: T }, rhs_known_vals: ?[basis_size]struct { known: bool, val: T }) CayleyReturn {
-            //const prods = count_bits(lhs_subset & rhs_subset);
-            //const left_elems = count_bits(lhs_subset);
-            //const right_elems = count_bits(rhs_subset);
-            var ret: [basis_len][basis_len]BladeTerm() = .{.{undefined} ** basis_len} ** basis_len;
-            var inv: [basis_len][basis_len]ProdTerm = .{.{undefined} ** basis_len} ** basis_len;
+            //inputs to outputs under op = the image, unsimplified
+            // nth axis here is the nth operand acted upon by op. the value stored here is the value returned by op given those operands
+            var ret: [basis_len][basis_len]BladeTerm = .{.{undefined} ** basis_len} ** basis_len;
+            //outputs to inputs under op = the pre image
+            // the first axis is always the output, the second axis contains up to basis_len values containing what operand blades contributed to them
+            var inv: [basis_len][basis_len]ProdTerm = .{.{.{.mult = 0, .left_blade = 0, .right_blade = 0}} ** basis_len} ** basis_len;
 
             const one: ux = 0b1;
 
@@ -1587,7 +2098,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     const t_lhs: ud = @truncate(lhs);
                     const t_rhs: ud = @truncate(rhs);
                     if (rhs_subset & (one << t_rhs) == 0 or lhs_subset & (one << t_lhs) == 0) {
-                        ret[lhs][rhs] = BladeTerm(){ .value = 0, .blade = 0 };
+                        ret[lhs][rhs] = BladeTerm{ .value = 0, .blade = 0 };
                         continue;
                     }
                     //const rhs_curr_idx = count_bits(rhs_subset & ((0b1 << rhs) - 1));
@@ -1599,7 +2110,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         continue;
                     }
                     //inv[result term blade][0..n] = .{magnitude coeff, lhs operand, rhs operand}
-                    // where 0..n are the filled in indices, n = inv_indices[]
+                    // where 0..inv_indices[res.blade] are the filled in indices
                     inv[res.blade][inv_indices[res.blade]] = .{ .mult = res.value, .left_blade = lhs, .right_blade = rhs };
                     inv_indices[res.blade] += 1;
                 }
@@ -1645,7 +2156,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             const one: ux = 0b1;
 
             for (0..max_terms) |ith_term| {
-                //check if ith_term <= inv_indices[result_blade] for all result_blade's that are in superset, if theres any terms left then collate them into the next set of masks
+                //check if ith_term <= inv_indices[result_blade] for all result_blade's that are in superset, 
+                //if theres any terms left then collate them into the next set of masks
                 var remaining_terms: bool = false;
                 for (0..basis_len) |res_blade| {
                     const result_blade: ud = @truncate(res_blade);
@@ -1749,6 +2261,12 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     if (!invalid) {
                         //@compileLog(comptimePrint("\nlhs mask: {d: <3.0}, rhs_mask: {d: <3.0}, coeff_mask: {d: <3.0}", .{ lhs_mask, rhs_mask, coeff_mask }));
 
+                        //left: {3,7,8,9} gp right: {0,1,2,3}:
+                        // for whatever reason, we determine res has {0,3,4,5,7,8,9}
+                        // first = @shuffle(D, left, ones, {-1,0,-1,-1,1,2,3}) =     {1, l0, 1, 1, l1, l2, l3}
+                        // second = @shuffle(D, right, ones, {0,-1,-1,1,-1,-1,-1}) = {r0, 1, 1, r1, 1, 1, 1}
+                        // res.terms += {r0, l0, 1, r1, l1, l2, l3}
+
                         //std.debug.print("\ncoeff_mask == zeros is {}, reduce: {}", .{@as(@Vector(len, T), @splat(@as(f64, 2.0))) * coeff_mask == coeff_mask, @reduce(.And, @as(@Vector(len, T), @splat(@as(f64, 2.0))) * coeff_mask == coeff_mask)});
                         const first = @shuffle(DataType, lhs.terms, ones, lhs_mask);
                         const second = @shuffle(DataType, rhs.terms, ones, rhs_mask);
@@ -1781,14 +2299,53 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             }
         }
 
+        pub fn nonzero_subset(comptime terms: [basis_size][basis_size]ProdTerm, comptime indices: [basis_size]usize) ux {
+            var ret_subset: ux = 0;
+            const one: ux = 0b1;
+            const delta: T = 0.00001;
+            for(0..basis_size) |blade| {
+                const blade_t: ud = @truncate(blade);
+                const len = indices[blade];
+                if(len == 0) {
+                    continue;
+                }
+                var sum: T = 0;
+                for(0..len) |i| {
+                    sum += terms[blade][i].mult;
+                }
+                if(@abs(sum) < delta) {
+                    continue;
+                }
+                ret_subset |= one << blade_t;
+
+            }
+            return ret_subset;
+        }
+
+        pub fn unary_nonzero_subset(comptime terms: [basis_len]UnaryProdTerm) ux {
+            var ret_subset: ux = 0;
+            const one: ux = 0b1;
+            const delta: T = 0.00001;
+            for(0..basis_len) |blade| {
+                const blade_t: ud = @truncate(blade);
+                const result = terms[blade];
+                if(@abs(result.mult) < delta) {
+                    continue;
+                }
+                ret_subset |= one << blade_t;
+
+            }
+            return ret_subset;
+        }
+
         const UnaryProdTerm = struct { mult: T, opr: usize };
-        const UnaryCayleyReturn = struct { fst: [basis_len]BladeTerm(), snd: [basis_len]UnaryProdTerm };
+        const UnaryCayleyReturn = struct { fst: [basis_len]BladeTerm, snd: [basis_len]UnaryProdTerm};
 
         pub fn unary_cayley_table(opr_subset: ux, op: anytype, opr_known_vals: ?[basis_size]struct { known: bool, val: T }) UnaryCayleyReturn {
             //const prods = count_bits(lhs_subset & rhs_subset);
             //const left_elems = count_bits(lhs_subset);
             //const right_elems = count_bits(rhs_subset);
-            var ret: [basis_len]BladeTerm() = .{undefined} ** basis_len;
+            var ret: [basis_len]BladeTerm = .{undefined} ** basis_len;
             var inv: [basis_len]UnaryProdTerm = .{undefined} ** basis_len;
 
             const one: ux = 0b1;
@@ -1796,13 +2353,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             for (0..basis_len) |blade| {
                 const t_blade: ud = @truncate(blade);
                 if (opr_subset & (one << t_blade) == 0) {
-                    ret[t_blade] = BladeTerm(){ .value = 0, .blade = 0 };
+                    ret[t_blade] = BladeTerm{ .value = 0, .blade = 0 };
                     continue;
                 }
                 //const rhs_curr_idx = count_bits(rhs_subset & ((0b1 << rhs) - 1));
                 const value = if (opr_known_vals != null and opr_known_vals.?[t_blade].known) opr_known_vals.?[t_blade].val else 1;
 
-                const res = op.eval(.{ .value = value, .blade = blade });
+                const res = op.eval(.{ .value = value, .blade = t_blade });
                 ret[blade] = res;
                 if (res.value == 0) {
                     continue;
@@ -1812,7 +2369,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 inv[res.blade] = .{ .mult = res.value, .opr = blade };
             }
 
-            return .{ .fst = ret, .snd = inv };
+            return .{ .fst = ret, .snd = inv};
         }
 
         pub fn unary_inverse_table_to_scatter_mask(comptime inv: [basis_len]UnaryProdTerm, comptime opr_subset: ux, comptime res_subset: ux, comptime len: usize) struct { [len]i32, [len]T } {
@@ -1846,16 +2403,16 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
             //const ones: @Vector(len, i32) = @splat(1);
             //const invalid_mask: @Vector(len, i32) = @splat(-1);
-            const zeros: @Vector(len, T) = @splat(0);
-            //const pos: @Vector(len, T) = @splat(1);
+            //const zeros: @Vector(len, T) = @splat(0);
+            const pos: @Vector(len, T) = @splat(1);
             //const neg: @Vector(len, T) = @splat(-1);
 
-            const gather = @shuffle(DataType, opr.terms, zeros, opr_mask);
+            const gather = @shuffle(DataType, opr.terms, pos, opr_mask);
             res.terms = gather * coeff_mask;
         }
         ///goes through every element of the given cayley table and adds its value to a return array at the index of that elements blade
         /// we want output += coeffs * scattered lhs * scattered rhs
-        //pub fn invert_cayley_table(cayley_table: [][]BladeTerm()) [][]ProdTerm() {
+        //pub fn invert_cayley_table(cayley_table: [][]BladeTerm) [][]ProdTerm() {
         //to our customers we want to provide the information "what affects the value of this term" for each term
         //cayley_table will be 0 in every non included row
         //    var ret: [basis_len][basis_len]ProdTerm() = undefined;
@@ -1904,9 +2461,25 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 };
 
                 pub const num_terms: usize = count_bits(subset);
+                pub const indices: [num_terms]ud = blk: {
+                    var Indices: [num_terms]ud = undefined;
+                    const one: ux = 0b1;
+                    var index = 0;
+                    for(0..num_terms) |blade| {
+                        const blade_t: ud = @truncate(blade);
+                        if(subset & (one << blade_t) == 0) {
+                            continue;
+                        }
+
+                        Indices[index] = blade_t;
+                        index += 1;
+                    }
+                    const _Indices = Indices;
+                    break :blk _Indices;
+                };
 
                 ///when converted to MVecSubset this MUST only contain the blades specific to this instance
-                pub const BladeE: type = Self.Algebra.BasisBladeEnum;
+                pub const BladeE: type = Self.Algebra.GenBlade(Self.subset_field);
                 //pub const Blades: [num_terms]Blade = blk: {
                 //    var ret: [num_terms]Blade = undefined;
                 //    for(0..dyn.len) |i| {
@@ -1950,7 +2523,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 terms: @Vector(num_terms, T),
 
-                pub fn get(self: *Self, comptime res_type: enum { stack, ptr }, blade: BladeE) switch (res_type) {
+                pub fn get_old(self: *Self, comptime res_type: enum { stack, ptr }, blade: BladeE) switch (res_type) {
                     .stack => T,
                     .ptr => *T,
                 } {
@@ -1964,6 +2537,10 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             return &self.terms[idx];
                         },
                     }
+                }
+
+                pub fn get(self: *Self, blade: BladeE) *T {
+                    return &self.terms[@intFromEnum(blade)];
                 }
 
                 pub fn zeros(self: *Self) *Self {
@@ -2051,7 +2628,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         _ = try writer.print("{d:.3}", .{term});
 
                         if (chars_needed > 0) {
-                            blade_buff[curr_char_idx] = 'e';
+                            blade_buff[curr_char_idx] = chars[curr_char_idx];
                             curr_char_idx += 1; //e
                             //var blade_copy = i;
                             var curr_bit_idx: usize = 0b1;
@@ -2117,6 +2694,98 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         .stack_alloc => Self{.terms=@splat(0)},
                         .ptr => res_data.ptr
                     };
+                }
+
+                ///returns the type of either x if its not a pointer or x's pointed type if it is, and whether it is a ptr or not
+                pub fn UnwrapPtrType(comptime x: type) struct {type, bool} {
+                    const x_info = @typeInfo(x);
+                    const x_is_ptr = x_info == .Pointer;
+                    const x_type = blk: {
+                        if(x_is_ptr) {
+                            break :blk x_info.Pointer.child;
+                        }
+                        break :blk x;
+                    };
+                    return .{x_type, x_is_ptr};
+                }
+
+                pub fn BinaryRes(comptime opr: Operation, left_outer_type: type, right_outer_type: type, res_outer_type: type) type {
+                    const res_info = @typeInfo(res_outer_type);
+
+                    if(res_info == .Type or res_info == .Pointer) {
+                        return res_outer_type;
+                    }
+
+                    if(res_info == .Struct) {
+                        @compileError(comptimePrint("cant pass in a struct as a result argument!", .{}));
+                        //return res_outer_type;
+                    }
+
+                    if(res_info != .Null and res_info != .Void) {
+                        @compileError(comptimePrint("invalid result argument passed to BinaryRes()!"));
+                    }
+
+                    const left_ret = UnwrapPtrType(left_outer_type);
+                    const right_ret = UnwrapPtrType(right_outer_type);
+
+                    const left_type = left_ret.@"0";
+                    const right_type = right_ret.@"0";
+
+                    const left_set = left_type.subset_field;
+                    const right_set = right_type.subset_field;
+                    
+                    const table = comptime Alg.cayley_table(left_set, right_set, opr.BladeOp(), null, null);
+                    const ret_subset: ux = nonzero_subset(table.snd, table.third);
+                    return MVecSubset(ret_subset);
+                }
+
+
+                pub fn UnaryRes(comptime opr: Alg.Operation, source: type, drain: type) type {
+                    const res_info = @typeInfo(drain);
+
+                    if(res_info == .Type or res_info == .Pointer) {
+                        return drain;
+                    }
+
+                    if(res_info == .Struct) {
+                        @compileError(comptimePrint("cant pass in a struct as a result argument!", .{}));
+                        //return res_outer_type;
+                    }
+
+                    if(res_info != .Null and res_info != .Void) {
+                        @compileError(comptimePrint("invalid result argument passed to UnaryRes()!"));
+                    }
+
+                    const source_ret = UnwrapPtrType(source);
+
+                    const source_t = source_ret.@"0";
+
+                    const source_set = source_t.subset_field;
+
+                    const table = comptime Alg.unary_cayley_table(source_set, opr.BladeOp(), null);
+                    const ret_subset: ux = unary_nonzero_subset(table.snd);
+                    
+                    return MVecSubset(ret_subset);
+
+                }
+
+                pub fn get_result(passed_in_res: anytype, comptime true_res: type) true_res {
+                    const passed_res_info = blk: {
+                        const ti = @typeInfo(@TypeOf(passed_in_res));
+                        if(ti == .Type) {
+                            if(@typeInfo(passed_in_res) == .Pointer) {
+                                break :blk @typeInfo(@typeInfo(passed_in_res).Pointer.child);
+                            }
+                            break :blk @typeInfo(passed_in_res);
+                        }
+                        break :blk ti;
+                    };
+                    if(passed_res_info == .Pointer) {
+                        return passed_in_res;
+                    }
+                    const ret: true_res = undefined;
+                    return ret;
+                    //if passed_in_res is null or a type, create a new true_res and return it. otherwise
                 }
 
                 pub fn add(lhs: anytype, rhs: anytype, res: anytype) @TypeOf(res) { //comptime lhs_type: type, lhs: *lhs_type, comptime rhs_type: type, rhs: *rhs_type, comptime ret_type: type, ret_ptr: *ret_type) *ret_type {
@@ -2257,7 +2926,37 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn gp(left: anytype, right: anytype, res: anytype) @TypeOf(res) {
+                pub fn gp(left: anytype, right: anytype, res: anytype) BinaryRes(.GeometricProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res)) {
+                    const Result = BinaryRes(.GeometricProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res));
+                    const result = get_result(res, Result);
+
+                    const LeftInner = UnwrapPtrType(@TypeOf(left)).@"0";
+                    const RightInner = UnwrapPtrType(@TypeOf(right)).@"0";
+                    const ResInner = UnwrapPtrType(Result).@"0";
+                    
+                    const left_set: ux = LeftInner.subset_field;
+                    const right_set: ux = RightInner.subset_field;
+                    const res_set: ux = ResInner.subset_field;
+
+                    const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.GeometricProduct.BladeOp(), null, null);
+                    //tell the table inverter the res size, then we can expect it to return an array with comptime known size
+                    const res_size = comptime count_bits(res_set);
+                    const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
+
+                    //@compileLog(comptimePrint("\nleft_set: {b}, right_set: {b}, res_set: {b}, table: {}, res_size: {}, operation: {}", .{left_set, right_set, res_set, table, res_size, operation}));
+
+                    const left_arg: *Self = blk: {
+                        if(@TypeOf(left) == LeftInner) {
+                            break :blk &left;
+                        }
+                        break :blk left;
+                    };
+
+                    Alg.execute_sparse_vector_op(left_arg, right, result, comptime operation, comptime res_size, D);
+                    return result;
+                }
+
+                pub fn gp_old2(left: anytype, right: anytype, res: anytype) @TypeOf(res) {
                     const left_type: type = @typeInfo(@TypeOf(left)).Pointer.child;
                     const right_type: type = @typeInfo(@TypeOf(right)).Pointer.child;
                     const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
@@ -2393,27 +3092,32 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn op(left: anytype, right: anytype, res: anytype) void {
-                    const left_type: type = @typeInfo(@TypeOf(left)).Pointer.child;
-                    const right_type: type = @typeInfo(@TypeOf(right)).Pointer.child;
-                    const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+                pub fn op(left: anytype, right: anytype, res: anytype) BinaryRes(.OuterProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res)) {
+                    const Result = BinaryRes(Alg.Operation.GeometricProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res));
+                    const result = get_result(res, Result);
 
-                    const left_set: ux = comptime blk: {
-                        break :blk left_type.subset_field;
-                    };
-                    const right_set: ux = comptime blk: {
-                        break :blk right_type.subset_field;
-                    };
-                    const res_set: ux = comptime blk: {
-                        break :blk res_type.subset_field;
-                    };
+                    const LeftInner = UnwrapPtrType(@TypeOf(left)).@"0";
+                    const RightInner = UnwrapPtrType(@TypeOf(right)).@"0";
+                    const ResInner = UnwrapPtrType(Result).@"0";
+                    
+                    const left_set: ux = LeftInner.subset_field;
+                    const right_set: ux = RightInner.subset_field;
+                    const res_set: ux = ResInner.subset_field;
 
                     const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.OuterProduct.BladeOp(), null, null);
                     //tell the table inverter the res size, then we can expect it to return an array with comptime known size
                     const res_size = comptime count_bits(res_set);
                     const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
 
-                    Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
+                    const left_arg: *Self = blk: {
+                        if(@TypeOf(left) == LeftInner) {
+                            break :blk &left;
+                        }
+                        break :blk left;
+                    };
+
+                    Alg.execute_sparse_vector_op(left_arg, right, result, comptime operation, comptime res_size, D);
+                    return result;
                 }
 
                 pub fn op_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
@@ -2433,27 +3137,31 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn ip(left: anytype, right: anytype, res: anytype) void {
-                    const left_type: type = @typeInfo(@TypeOf(left)).Pointer.child;
-                    const right_type: type = @typeInfo(@TypeOf(right)).Pointer.child;
-                    const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+                pub fn ip(left: anytype, right: anytype, res: anytype) BinaryRes(Alg.Operation.GeometricProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res)) {
+                    const Result = BinaryRes(.InnerProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res));
+                    const result = get_result(res, Result);
 
-                    const left_set: ux = comptime blk: {
-                        break :blk left_type.subset_field;
-                    };
-                    const right_set: ux = comptime blk: {
-                        break :blk right_type.subset_field;
-                    };
-                    const res_set: ux = comptime blk: {
-                        break :blk res_type.subset_field;
-                    };
-
+                    const LeftInner = UnwrapPtrType(@TypeOf(left)).@"0";
+                    const RightInner = UnwrapPtrType(@TypeOf(right)).@"0";
+                    const ResInner = UnwrapPtrType(Result).@"0";
+                    
+                    const left_set: ux = LeftInner.subset_field;
+                    const right_set: ux = RightInner.subset_field;
+                    const res_set: ux = ResInner.subset_field;
                     const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.InnerProduct.BladeOp(), null, null);
                     //tell the table inverter the res size, then we can expect it to return an array with comptime known size
                     const res_size = comptime count_bits(res_set);
                     const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
 
-                    Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
+                    const left_arg: *Self = blk: {
+                        if(@TypeOf(left) == LeftInner) {
+                            break :blk &left;
+                        }
+                        break :blk left;
+                    };
+
+                    Alg.execute_sparse_vector_op(left_arg, right, result, comptime operation, comptime res_size, D);
+                    return result;
                 }
 
                 pub fn ip_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
@@ -2490,27 +3198,31 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 //count_flips(x, 1111...) = sum(count_bits(x >>= 1))
                 //if in lhs bit i = 1, then flips += pow(2,i-1) (lsb is index 0)
 
-                pub fn rp(left: anytype, right: anytype, res: anytype) void {
-                    const left_type: type = @typeInfo(@TypeOf(left)).Pointer.child;
-                    const right_type: type = @typeInfo(@TypeOf(right)).Pointer.child;
-                    const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+                pub fn rp(left: anytype, right: anytype, res: anytype) BinaryRes(Alg.Operation.GeometricProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res)) {
+                    const Result = BinaryRes(.RegressiveProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res));
+                    const result = get_result(res, Result);
 
-                    const left_set: ux = comptime blk: {
-                        break :blk left_type.subset_field;
-                    };
-                    const right_set: ux = comptime blk: {
-                        break :blk right_type.subset_field;
-                    };
-                    const res_set: ux = comptime blk: {
-                        break :blk res_type.subset_field;
-                    };
-
-                    const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.RegressiveProduct.BladeOp(), null, null);
+                    const LeftInner = UnwrapPtrType(@TypeOf(left)).@"0";
+                    const RightInner = UnwrapPtrType(@TypeOf(right)).@"0";
+                    const ResInner = UnwrapPtrType(Result).@"0";
+                    
+                    const left_set: ux = LeftInner.subset_field;
+                    const right_set: ux = RightInner.subset_field;
+                    const res_set: ux = ResInner.subset_field;
+                    const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.InnerProduct.BladeOp(), null, null);
                     //tell the table inverter the res size, then we can expect it to return an array with comptime known size
                     const res_size = comptime count_bits(res_set);
                     const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
 
-                    Alg.execute_sparse_vector_op(left, right, res, comptime operation, comptime res_size, D);
+                    const left_arg: *Self = blk: {
+                        if(@TypeOf(left) == LeftInner) {
+                            break :blk &left;
+                        }
+                        break :blk left;
+                    };
+
+                    Alg.execute_sparse_vector_op(left_arg, right, result, comptime operation, comptime res_size, D);
+                    return result;
                 }
 
                 pub fn rp_old(left: *Self, right: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
@@ -2528,7 +3240,15 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return result;
                 }
 
-                pub fn meet(left: anytype, right: anytype, res: anytype) void {
+                pub fn MeetRes(left: type, right: type, res: type) type {
+                    if(Self.Algebra.alg_options.dual == true) {
+                        return BinaryRes(.RegressiveProduct, left, right, res);
+                    } else {
+                        return BinaryRes(.OuterProduct, left, right, res);
+                    }
+                }
+
+                pub fn meet(left: anytype, right: anytype, res: anytype) MeetRes(@TypeOf(left), @TypeOf(right), @TypeOf(res)) {
                     if(comptime Self.Algebra.alg_options.dual == true) {
                         return Self.rp(left,right,res);
                     } else {
@@ -2536,7 +3256,15 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     }
                 }
 
-                pub fn join(left: anytype, right: anytype, res: anytype) void {
+                pub fn JoinRes(left: type, right: type, res: type) type {
+                    if(Self.Algebra.alg_options.dual == true) {
+                        return BinaryRes(.OuterProduct, left, right, res);
+                    } else {
+                        return BinaryRes(.RegressiveProduct, left, right, res);
+                    }
+                }
+
+                pub fn join(left: anytype, right: anytype, res: anytype) JoinRes(@TypeOf(left), @TypeOf(right), @TypeOf(res)) {
                     if(comptime Self.Algebra.alg_options.dual == true) {
                         return Self.op(left,right,res);
                     } else {
@@ -2606,16 +3334,22 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     return self;
                 }
 
-                //TODO: figure out return semantics api that doesnt suck ass to use and to write
-                //pub fn reverse(self: *Self) Self {
-                //    const result: *Self = blk: {
-                //        switch(res_type) {
-                //            .alloc_new => break :blk try res_data.alloc_new.create(Self),
-                //            .ptr => break :blk res_data.ptr,
-                //        }
-                //    };
-                //
-                //}
+                pub fn reverse(source: *Self, drain: anytype) UnaryRes(.Reverse, @TypeOf(source), @TypeOf(drain)) {
+                    const Result = UnaryRes(.Reverse, @TypeOf(source), @TypeOf(drain));
+                    const result = get_result(drain, Result);
+
+                    const SourceInner = UnwrapPtrType(@TypeOf(source)).@"0";
+                    const DrainInner = UnwrapPtrType(@TypeOf(drain)).@"0";
+
+                    const source_set: ux = SourceInner.subset_field;
+                    const drain_set: ux = DrainInner.subset_field;
+
+                    const table = comptime Alg.unary_cayley_table(source_set, Alg.Operation.Reverse.BladeOp(), null);
+                    const operation = comptime Alg.unary_inverse_table_to_scatter_mask(table.snd, source_set, drain_set, count_bits(drain_set));
+
+                    Alg.unary_execute_sparse_vector_op(source, result, comptime operation, count_bits(drain_set), D);
+                    return result;
+                }
 
                 pub fn invert(self: *Self) *Self {
                     _=self.revert();
@@ -2743,18 +3477,41 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 ///changes subsets
                 /// if we have a blade at bit index i, our dual must have a blade at bit index basis_len - 1 - i
                 /// in other words our dual has our subset but mirror across the middle at minimum
-                pub fn dual(self: *Self, result: *NVec) *NVec {
-                    const table = comptime unary_cayley_table(Self.subset_field, Operation.Dual.BladeOp(), null);
-                    const masks = comptime unary_inverse_table_to_scatter_mask(table.snd, Self.subset_field, NVec.subset_field, count_bits(NVec.subset_field));
-                    unary_execute_sparse_vector_op(self, result, masks, count_bits(NVec.subset_field), D);
+                pub fn dual(source: *Self, drain: anytype) UnaryRes(.Dual, @TypeOf(source), @TypeOf(drain)) {
+                    const Result = UnaryRes(.Dual, @TypeOf(source), @TypeOf(drain));
+                    const result = get_result(drain, Result);
 
-                    //inline for (0..Self.Algebra.basis_len) |i| {
-                    //    result.terms[i] = self.terms[Self.Algebra.basis_len - 1 - i];
-                    //}
+                    const SourceInner = UnwrapPtrType(@TypeOf(source)).@"0";
+                    const DrainInner = UnwrapPtrType(@TypeOf(drain)).@"0";
+
+                    const source_set: ux = SourceInner.subset_field;
+                    const drain_set: ux = DrainInner.subset_field;
+
+                    const table = comptime Alg.unary_cayley_table(source_set, Alg.Operation.Dual.BladeOp(), null);
+                    const operation = comptime Alg.unary_inverse_table_to_scatter_mask(table.snd, source_set, drain_set, count_bits(drain_set));
+
+                    Alg.unary_execute_sparse_vector_op(source, result, comptime operation, count_bits(drain_set), D);
                     return result;
                 }
 
-                pub fn involution(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
+                pub fn involution(source: *Self, drain: anytype) UnaryRes(.Involution, @TypeOf(source), @TypeOf(drain)) {
+                    const Result = UnaryRes(.Involution, @TypeOf(source), @TypeOf(drain));
+                    const result = get_result(drain, Result);
+
+                    const SourceInner = UnwrapPtrType(@TypeOf(source)).@"0";
+                    const DrainInner = UnwrapPtrType(@TypeOf(drain)).@"0";
+
+                    const source_set: ux = SourceInner.subset_field;
+                    const drain_set: ux = DrainInner.subset_field;
+
+                    const table = comptime Alg.unary_cayley_table(source_set, Alg.Operation.Dual.BladeOp(), null);
+                    const operation = comptime Alg.unary_inverse_table_to_scatter_mask(table.snd, source_set, drain_set, count_bits(drain_set));
+
+                    Alg.unary_execute_sparse_vector_op(source, result, comptime operation, count_bits(drain_set), D);
+                    return result;
+                }
+
+                pub fn involution_old(self: *Self, comptime res_type: ResTypes, res_data: ResSemantics) GetStandardRes(res_type) {
                     const result = get_standard_res(res_type, res_data);
 
                     const len = comptime count_bits(@TypeOf(result).subset_field);
@@ -2997,9 +3754,25 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     field |= b_idx;
                 }
             }
+            if(count_bits(field) == 0) {
+                unreachable;
+            }
+            return MVecSubset(field);
+            //return void;
+        }
+        pub fn KVectorOpt(comptime count: anytype) type {
+            var field: ux = 0b0;
+            const one: ux = 0b1;
+            for(0..basis_len) |blade| {
+                const b_idx = one << blade;
+                if(count_bits(blade) == count) {
+                    field |= b_idx;
+                }
+            }
             if(count_bits(field) != 0) {
                 return MVecSubset(field);
             }
+            //unreachable;
             return void;
         }
 
