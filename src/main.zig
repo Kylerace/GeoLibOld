@@ -438,12 +438,14 @@ pub fn main() !void {
     const Point = alg.KVector(d);
     const Line = alg.KVector(d-1);
     const Motor = alg.Motor;
+    const Plane = alg.Plane;
+    _=Plane;
     const ux = alg.ux;
     const ud = alg.ud;
     const point_set = Point.subset_field;
 
     var vertices: [pow2]Point = undefined;
-    const num_edges = comptime std.math.pow(usize, 2, d) * (d + 1);
+    const num_edges = comptime std.math.pow(usize, 2, d-1) * (d);
     var edges: [num_edges]Line = undefined;
 
     debug.print("\nedges[0]: {}\n", .{edges[0]});
@@ -487,11 +489,15 @@ pub fn main() !void {
             } 
             vertices[i].terms[idx] = val;
         }
+        //var euclidian_diag_plane: Plane = .{.terms = @splat(1)};
+        //_=euclidian_diag_plane.set(.e0, 0);
+        //var x = vertices[i].gp(&euclidian_diag_plane, null);
+        //_=x.set(.e0, 1).dual(null);
 
-        debug.print("index {}: {}", .{i, vertices[i]});
+        debug.print("\nvertex index {} ({b:3}): {}", .{i,i, vertices[i]});
     }
+    debug.print("\n-----------------------\n",.{});
 
-    debug.print("\n", .{});
     debug.print("\nLINE SUBSET: {b}, len: {}", .{Line.subset_field, count_bits(Line.subset_field)});
     var tst: Line = undefined;
     tst.terms = @splat(1.0);
@@ -501,24 +507,45 @@ pub fn main() !void {
     debug.print("\nPOINT SUBSET {b}, len: {}", .{Point.subset_field, count_bits(Point.subset_field)});
 
     var edge_i: usize = 0;
-    for(0..pow2) |i| {
-        for(i..pow2) |j| {
-            if(i == j or (i^j)&(i^j-1) != 0) {
+    for(0..pow2) |_i| {
+        for(_i..pow2) |_j| {
+            //const i: isize = @intCast(_i);
+            //const j: isize = @intCast(_j);
+            //if(i <= j or (i^j)&(i^(j-1)) != 0) {
+            //    continue;
+            //}
+            const p_i = &vertices[_i];
+            const p_j = &vertices[_j];
+
+            var num_different: usize = 0;
+
+            const one: ux = 0b1;
+            for(0..alg.basis_len) |blade| {
+                const blade_t: ud = @truncate(blade);
+                if(Point.subset_field & (one << blade_t) == 0) {
+                    continue;
+                }
+                const idx = count_bits(Point.subset_field & ((one << blade_t) -% 1));
+                if(p_i.terms[idx] != p_j.terms[idx]) {
+                    num_different += 1;
+                }
+            }
+            if(num_different != 1) {
                 continue;
             }
             _=&edges[edge_i].zeros();
-            const p_i = &vertices[i];
-            const p_j = &vertices[j];
-            _=p_i.gp(p_j, &edges[edge_i]);
+            _=p_i.rp(p_j, &edges[edge_i]);
+            //const x =p_i.rp(p_j, alg.NVec);
             //var res: Line = undefined;
             //_=res.zeros();
             //_=p_i.gp_old2(p_j, &res);
-            //debug.print("\n NEW: edge index {}: {} = {} gp {}", .{edge_i, &edges[edge_i], p_i, p_j});
+            //debug.print("\n\tfull output {} rp {} = {}", .{p_i, p_j, x});
+            debug.print("\nedge index {}: {} = {} ({b}) {} gp {} ({b}) {}", .{edge_i, edges[edge_i], _i, _i, p_i, _j, _j, p_j});
             //debug.print("\n\t OLD: edge index {}: {}", .{edge_i, res});
             edge_i += 1;
         }
     }
-
+    debug.print("\n-----------------------\n",.{});
     //const state: struct{Motor, Line} = undefined;
     //_=state;
     var M: Motor = undefined;
@@ -527,12 +554,12 @@ pub fn main() !void {
     _=B.init(&.{.{.e01,0.1},.{.e02,1.3},.{.e13,0.5}});
 
     const dt: f64 = 1/60;
-    const num_iters: usize = 10;
+    const num_iters: usize = 1;
     //_=num_iters;
     const sub_steps: usize = 10;
 
     const state_step_size: f64 = dt / sub_steps;
-    _=state_step_size;
+    //_=state_step_size;
     var current_edges: [num_edges]Line = undefined;
     @memcpy(&current_edges, &edges);
 
@@ -543,9 +570,11 @@ pub fn main() !void {
         for(0..sub_steps) |_| {
             //const multd_M = M.mul_scalar(-0.5, null);
             
-            const x = M.mul_scalar( -0.5, Motor);
-            M = x.gp(&B, Motor);
+            var dM = M.mul_scalar( -0.5, Motor).gp(&B, Motor);
+            var dB = B.dual(null).gp(B, null).sub(B.gp(B.dual(null), null), Line).undual(null).mul_scalar(-0.5, Line);
 
+            _=M.add(dM.mul_scalar(state_step_size, null), &M);
+            _=B.add(dB.mul_scalar(state_step_size, null), &B);
             //const ds: struct{Motor, Line} = .{
             //    y,
             //    B.dual(null).gp(B, null).sub(B.gp(B.dual(null), null), null).undual(null).mul_scalar(-0.5, null)
@@ -555,9 +584,10 @@ pub fn main() !void {
         }
      
         for(0..num_edges) |i| {
-            current_edges[i] = M.sandwich(&edges[i], null);
+            _=M.sandwich(&edges[i], &current_edges[i]);
      
-            debug.print("\niter {}: edge {} -> {} under motor {}", .{iter, &edges[i], &current_edges[i], M});
+            debug.print("\niter {}: edge {} -> {} under motor {}", .{iter, &edges[i], &current_edges[i], &M});
+            _=&current_edges[i].zeros();
         } 
     }
 
@@ -1146,16 +1176,164 @@ const TensorShapeUnion = union(enum) {
     unknown: void
 };
 
-fn Tensor(comptime _T: type, comptime _shape: []usize) type {
+fn NDArr(comptime _T: type, comptime _shape: []usize) type {
     //pub fn to_sparse_map()
     return struct {
         const Self = @This();
         const T = _T;
         pub const rank = _shape.len;
-        pub const shape = _shape;
+        /// outside->inside. the first element of shape is n elements each sigma pi(shape[0:]) individual indices apart
+        /// e.g. if shape is (4, 3, 2) then the first element is (0 * 3 * 2 + 0 * 2 + 0 = 0), the next is (0 * (3*2) + 0 * (2) + 1 = 1),
+        /// (0 * (3*2) + 1 * 2 + 0 = 2), (0 * (3*2) + 1 * 2 + 1 = 3), (0 * (3*2) + 2 * 2 + 0 = 4), (0*6 + 2 * 2 + 1 = 5), (1*6 + 0 * 2 + 0 = 6), ...
+        /// until index 3 * 6 + 2 * 2 + 1 = 23 = len (24) - 1
+        pub const shape: [rank]usize = _shape;
+        pub const strides: [rank]usize = blk: {
+            var ret: [rank]usize = &.{1} ** shape.len;
+            for(0..shape.len-1) |i| {
+                for(i+1..shape.len) |j| {
+                    ret[i] *= shape[j];
+                }
+            }
+            break :blk ret;
+        };
         pub const len = blk: {
             break :blk slice_product(usize, shape);
         };
+        pub const Indices: type = [rank]usize;
+        ///start : stop : step
+        pub const IterSlice = struct {
+            pub const Us = @This();
+            at: usize, before: usize, step: isize = 1,
+            index: usize,
+
+            /// delta is the numeric change in our index, wrapped is whether we incremented and wrapped around
+            pub const Next = struct{delta: isize, wrapped: bool}; 
+            pub fn length(self: *Us) usize {
+                if(self.step > 0) {
+                    return @as(usize, @floor((self.before - self.at) / self.step));
+                } else {
+                    return @as(usize, @ceil((self.at - self.before) / self.step));
+                }
+            }
+            // at: 3, before: 6, step: 1, index: 5
+            // if carry = false, 5 + 1 = 6 >= before, so go back to 3, 6 - 6 + 3 = 3
+            // if carry = true, 5 + 2 = 7 >= before, so we want to go to 4, 7 - 6 + 3 = 4
+            // so yeah subtract before add at
+            
+            pub fn incr(self: *Us, carry: bool) Next {
+                const old_index = self.index;
+                const step = if(carry) 2 * self.step else self.step;
+                if(self.index + step >= self.before) {
+                    self.index += step - self.before + self.at;
+                    return Next{.delta = self.index - old_index, .wrapped = true};
+                }
+                self.index += step;
+                return Next{.delta = self.index - old_index, .wrapped = false};
+            }
+        };
+        pub const IterAxis = union(enum) {
+            pub const Us = @This();
+            /// 0 rank output iteration through this axis: the iterator's final output's rank is not affected
+            /// by this slice
+            elements: IterSlice,
+            /// adds 1 to the output rank of the iterator: the output of the iterator will now be an NDArray
+            /// each array axis adds its length to the shape of the output, the index of the output shape is the 
+            /// number of array slices BEFORE this one, if its the ith array axis then it's output shape index is i
+            array: IterSlice,
+
+            pub fn output_rank(self: Us) usize {
+                return switch(self) {
+                    .elements => 0,
+                    .array => 1,
+                };
+            }
+            pub fn output_shape(self: Us) usize {
+                return switch(self) {
+                    .elements => 0,
+                    .array => |*slc| slc.length()
+                };
+            }
+        };
+        pub const InferIterNum: type = union(enum) {
+            at: usize,
+            starting_at: usize, //inference type
+            to: usize, //inference type
+            slice: IterSlice,
+            all: void,
+        };
+        pub const IterNum: type = union(enum) {
+            just: usize, //index -> rank 0
+            slice: IterSlice //vector along axis -> rank 1
+            //the final rank is the sum of all slice lengths
+            //the final shape is the ordered composition of all slice lengths
+        };
+        pub const InferIterShape: type = []InferIterNum;
+        pub fn IterShape(length: usize) type {
+            return [length]IterNum;
+        } 
+        //rank 0 output NDArrs are flattened to just *T
+        //all ints [x,y,z,...] for a matching shape gives an NDArr of shape 0 containing the xth - yth - zth... element
+        //remember that scalars are rank 0 NDArrs, so n rank 0 NDArrs combine into a rank 0 NDArr (which is unwrapped into its only element)
+        //each slice in an iteration axis is a rank 1 NDArr of length (num steps to take)
+        //the final value returned by next() is of rank (num slices)
+
+        //what the fuck am i doing this is an iterator not an array access,
+        //we need a way to tell it to iterate through some slices while returning some shape of sub arrays
+        pub fn Iterator() type {
+            return struct {
+                pub const Us = @This();
+                pub const Parent = Self;
+
+                indices: Indices,
+                index: usize,
+                parent: *Parent,
+
+
+                pub fn done(self: *Us) bool {
+                    return self.index >= len;
+                }
+
+                pub fn Next() type {
+                    return ?*T;
+                    //if(output_rank == 0) {
+                    //    return ?*T;
+                    //}
+                    //return ?NDArr(?*T, &output_shape);
+                }
+
+                pub fn get_next() Next() {
+                    return null;
+                    //if(Next() == ?*T) {
+                    //    const ret: ?*T = null;
+                    //    return ret;
+                    //}
+                    //const ret: ?NDArr(?*T, &output_shape) = NDArr(?*T, &output_shape).init(&.{null} ** output_rank);
+                    //return ret;
+                }
+
+                pub fn next(self: *Us) Next() {
+                    if(self.done() == true) {
+                        return null;
+                    }
+                    //incr rightmost multi-index, if it overflows set it to 0 and carry a 1 into the next one
+                    //for every multi-index changed, change self.index by strides[axis] * axis_delta
+                    var i: usize = rank;
+                    while(i > 0) {
+                        i -= 1;
+                        if(self.indices[i] < shape[i] - 1) {
+                            self.indices[i] += 1;
+                            self.index += strides[i];
+                            break;
+                        }
+                        self.index -= strides[i] * self.indices[i];
+                        self.indices[i] = 0;
+                    } 
+                    return &self.parent.data[self.index];
+                }
+
+            };
+        }
+
         data: [len]T,
 
         pub fn slice_product(comptime D: type, slice: []D) D {
@@ -1178,6 +1356,22 @@ fn Tensor(comptime _T: type, comptime _shape: []usize) type {
                 data,
             };
         }
+
+        pub fn iter(self: *Self, start_indices: []usize) Iterator() {
+            var indices: Indices = .{0} ** rank;
+            var index: usize = 0;
+            for(0..rank) |axis| {
+                if(start_indices.len > axis) {
+                    indices[axis] = start_indices[axis];
+                    index += strides[axis] * start_indices[axis];
+                    continue;
+                }
+                indices[axis] = 0;
+            }
+            
+            return .{.indices = indices, .index = index, .parent = self};
+        }
+
     };
 }
 
@@ -1398,6 +1592,19 @@ fn cosh(num: anytype) @TypeOf(num) {
 
 fn sinh(num: anytype) @TypeOf(num) {
     return 0.5 * (@exp(num) - @exp(-num));
+}
+
+
+pub fn typeInfoOf(x: anytype) @TypeOf(@typeInfo(@TypeOf(x))) {
+    return @typeInfo(@TypeOf(x));
+}
+
+pub fn complog(comptime chars: anytype, comptime args: anytype) void {
+    @compileLog(comptimePrint(chars, args));
+}
+
+pub fn comperror(comptime chars: anytype, comptime args: anytype) void {
+    @compileError(comptimePrint(chars, args));
 }
 
 //fn Foo<T>(arg: T) {
@@ -1931,7 +2138,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             return ret;
         }
 
-        pub const BasisBladeEnum = GenBlade(@truncate(~0)); //TODO: array?
+        pub const BasisBladeEnum = GenBlade(~@as(ux, 0)); //TODO: array?
         pub const BasisBlades: [basis_size]BasisBladeEnum = blk: {
             var ret: [basis_size]BasisBladeEnum = undefined;
             for (0..basis_size) |i| {
@@ -2017,8 +2224,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     .Undual => BladeTerm,
                     .Reverse => BladeTerm,
                     .Involution => BladeTerm,
-                    .Add => struct{BladeTerm, ?BladeTerm},
-                    .Sub => struct{BladeTerm, ?BladeTerm},
+                    .Add => NDArr(T, &.{2}),
+                    .Sub => NDArr(T, &.{2}),
                 };
             }
 
@@ -2123,9 +2330,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             if (squares != 0) {
                                 return .{ .value = 0, .blade = blade };
                             }
-
+                             
                             const value = -2 * (((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1) + 1;
                             return .{ .value = value, .blade = blade };
+                            //const dual = Operation.Dual.BladeOp();
+                            //const undual = Operation.Undual.BladeOp();
+                            //const outer = Operation.OuterProduct.BladeOp();
+                            //return undual.eval(outer.eval(dual.eval(left), dual.eval(right)));
                         }
                     },
 
@@ -2158,10 +2369,12 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                     .Undual => struct {
                         pub fn eval(us: BladeTerm) Codomain(.Undual) {
-                            var pseudosquarelar = BladeTerm{.value = 1, .blade = pseudoscalar_blade};
-                            const op = Operation.GeometricProduct.BladeOp();
-                            pseudosquarelar = op.eval(pseudosquarelar, pseudosquarelar);
-                            return op.eval(pseudosquarelar, us);
+                            //var pseudosquarelar = BladeTerm{.value = 1, .blade = pseudoscalar_blade};
+                            //const op = Operation.GeometricProduct.BladeOp();
+                            //pseudosquarelar = op.eval(pseudosquarelar, pseudosquarelar);
+                            //return op.eval(pseudosquarelar, us);
+                            const op = Operation.Dual.BladeOp();
+                            return op.eval(op.eval(op.eval(us)));
                         }
                     },
 
@@ -2545,7 +2758,6 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         pub fn unary_execute_sparse_vector_op(opr: anytype, res: anytype, comptime masks: anytype, comptime len: usize, comptime DataType: type) void {
             const opr_mask = masks[0];
             const coeff_mask = masks[1];
-
             //const ones: @Vector(len, i32) = @splat(1);
             //const invalid_mask: @Vector(len, i32) = @splat(-1);
             //const zeros: @Vector(len, T) = @splat(0);
@@ -2761,6 +2973,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 return self;
             }
 
+            ///s fmt specifier means "sparse". it will only print the array without the title
             pub fn format(
                 nvec: Self,
                 comptime _: []const u8,
@@ -2926,13 +3139,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             pub fn UnaryRes(comptime opr: Alg.Operation, source: type, drain: type) type {
                 const res_info = @typeInfo(drain);
 
-                if(res_info == .Type or res_info == .Pointer) {
+                if(res_info == .Type or res_info == .Pointer or res_info == .Struct) {
                     return drain;
-                }
-
-                if(res_info == .Struct) {
-                    @compileError(comptimePrint("cant pass in a struct as a result argument!", .{}));
-                    //return res_outer_type;
                 }
 
                 if(res_info != .Null and res_info != .Void) {
@@ -2953,32 +3161,71 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             }
 
             pub fn get_result(passed_in_res: anytype, comptime true_res: type) true_res {
-                const passed_res_info = blk: {
-                    const ti = @typeInfo(@TypeOf(passed_in_res));
-                    if(ti == .Type) {
-                        break :blk @typeInfo(passed_in_res);
-                    }
-                    break :blk ti;
-                };
-                if(passed_res_info == .Pointer) {
-                    //const ret: true_res = @as(passed_in_res, true_res);
-                    //@compileLog(comptimePrint("passed_res_info child: {?}, true res: {s}", .{passed_res_info.Pointer.child, @typeName(true_res)}));
+                if(@typeInfo(@TypeOf(passed_in_res)) == .Pointer) {
                     return passed_in_res;
                 }
-                const ret: true_res = true_res.init_zero();
-                return ret;
+                var res: true_res = undefined;
+                _=res.zeros();
+                return res;
+                //const passed_res_info = blk: {
+                //    const ti = @typeInfo(@TypeOf(passed_in_res));
+                //    if(ti == .Type) {
+                //        break :blk @typeInfo(passed_in_res);
+                //    }
+                //    break :blk ti;
+                //};
+                //if(passed_res_info == .Pointer) {
+                //    //const ret: true_res = @as(passed_in_res, true_res);
+                //    //@compileLog(comptimePrint("passed_res_info child: {?}, true res: {s}", .{passed_res_info.Pointer.child, @typeName(true_res)}));
+                //    return passed_in_res;
+                //}
+                //const ret: true_res = true_res.init_zero();
+                //return ret;
                 //if passed_in_res is null or a type, create a new true_res and return it. otherwise
             }
 
-            pub fn add(lhs: anytype, rhs: anytype, res: anytype) @TypeOf(res) { //comptime lhs_type: type, lhs: *lhs_type, comptime rhs_type: type, rhs: *rhs_type, comptime ret_type: type, ret_ptr: *ret_type) *ret_type {
-                //if((@hasField(left_type, "Blades") == false or @hasField(right_type, "Blades") == false)) {
-                //    @compileError("YOU CANT JUST PASS ANYTHING INTO ADD()");
-                //}
-                //ret_ptr.terms =
+            pub fn Add(comptime lhs: type, comptime rhs: type, comptime res: type) type {
+                const res_info = @typeInfo(res);
+                if(res_info == .Type or res_info == .Pointer or res_info == .Struct) {
+                    return res;
+                }
 
-                const left_type: type = @typeInfo(@TypeOf(lhs)).Pointer.child;
-                const right_type: type = @typeInfo(@TypeOf(rhs)).Pointer.child;
-                const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+                const lr = comptime UnwrapPtrType(lhs);
+                const rr = comptime UnwrapPtrType(rhs);
+
+                const LeftInner: type = lr.@"0";
+                const RightInner: type = rr.@"0";
+
+                const left_set: ux = LeftInner.subset_field;
+                const right_set: ux = RightInner.subset_field;
+
+                var res_set: ux = 0;
+
+                const one: ux = 0b1;
+                for(0..basis_len) |bi| {
+                    for(0..basis_len) |bj| {
+                        const blade_i: ud = @truncate(bi);
+                        const blade_j: ud = @truncate(bj);
+
+                        if(left_set & (one << blade_i) != 0) {
+                            res_set |= (one << blade_i);
+                        }
+                        if(right_set & (one << blade_j) != 0) {
+                            res_set |= (one << blade_j);
+                        }
+                    }
+                }
+                return MVecSubset(res_set);
+            }
+
+
+            pub fn add(lhs: anytype, rhs: anytype, res: anytype) Add(@TypeOf(lhs), @TypeOf(rhs), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) { 
+                const Result = Add(@TypeOf(lhs), @TypeOf(rhs), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
+                var result = get_result(res, Result);
+
+                const left_type: type = UnwrapPtrType(@TypeOf(lhs)).@"0";
+                const right_type: type = UnwrapPtrType(@TypeOf(rhs)).@"0";
+                const ResInner: type = UnwrapPtrType(Result).@"0";
 
                 const left_set: ux = comptime blk: {
                     break :blk left_type.subset_field;
@@ -2987,7 +3234,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     break :blk right_type.subset_field;
                 };
                 const res_set: ux = comptime blk: {
-                    break :blk res_type.subset_field;
+                    break :blk ResInner.subset_field;
                 };
                 const len = comptime count_bits(res_set);
 
@@ -3029,9 +3276,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 const left = @shuffle(T, lhs.terms, zero, lhs_mask);
                 const right = @shuffle(T, rhs.terms, zero, rhs_mask);
 
-                res.terms = left + right;
+                result.terms = left + right;
 
-                return res;
+                return result;
 
                 //inline for (0..ret_type.num_terms) |i| {
                 //    const mvec_idx = comptime blk: {
@@ -3055,10 +3302,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 //return ret_ptr;
             }
 
-            pub fn sub(lhs: anytype, rhs: anytype, res: anytype) *Self {
-                const left_type: type = @typeInfo(@TypeOf(lhs)).Pointer.child;
-                const right_type: type = @typeInfo(@TypeOf(rhs)).Pointer.child;
-                const res_type: type = @typeInfo(@TypeOf(res)).Pointer.child;
+            pub fn sub(lhs: anytype, rhs: anytype, res: anytype) Add(@TypeOf(lhs), @TypeOf(rhs), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) { 
+                const Result = Add(@TypeOf(lhs), @TypeOf(rhs), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
+                var result = get_result(res, Result);
+
+                const left_type: type = UnwrapPtrType(@TypeOf(lhs)).@"0";
+                const right_type: type = UnwrapPtrType(@TypeOf(rhs)).@"0";
+                const ResInner: type = UnwrapPtrType(Result).@"0";
 
                 const left_set: ux = comptime blk: {
                     break :blk left_type.subset_field;
@@ -3067,7 +3317,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     break :blk right_type.subset_field;
                 };
                 const res_set: ux = comptime blk: {
-                    break :blk res_type.subset_field;
+                    break :blk ResInner.subset_field;
                 };
                 const len = comptime count_bits(res_set);
 
@@ -3080,8 +3330,18 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                         if (res_set & (one << result_blade) == 0) {
                             continue;
                         }
+                        //left_set = 0b01011101, if res_blade = 101 (5)
+                        //then if (0b01011101 & (0b1 << 101 = 0b100000) != 0 (true)),
+                        //then the index in left for blade 101 is:
+                        //count_bits(0b01011101 & (0b100000 -% 1 = 0b011111) = 0b00011101) = 4
+                        //which is correct
+                        
+                        //may not exist
                         const left_idx = count_bits(left_set & ((one << result_blade) -% 1));
                         const right_idx = count_bits(right_set & ((one << result_blade) -% 1));
+
+                        //must exist, and if an operand idx exists this is >= that
+                        //assuming res is a superset of lhs.subset_field | rhs.subset_field
                         const res_idx = count_bits(res_set & ((one << result_blade) -% 1));
 
                         if (left_set & (one << result_blade) != 0) {
@@ -3096,9 +3356,12 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 const rhs_mask = _rhs_mask;
                 const zero: @Vector(len, T) = @splat(0);
 
-                res.terms = @shuffle(T, lhs.terms, zero, lhs_mask) - @shuffle(T, rhs.terms, zero, rhs_mask);
+                const left = @shuffle(T, lhs.terms, zero, lhs_mask);
+                const right = @shuffle(T, rhs.terms, zero, rhs_mask);
 
-                return res;
+                result.terms = left - right;
+
+                return result;
             }
 
             pub fn MulScalarRet(self_type: type, res_type: type) type {
@@ -3109,7 +3372,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 return t;
             }
 
-            pub fn mul_scalar(self: *Self, scalar: T, res: anytype) BinaryRes(.GeometricProduct, @TypeOf(self), MVecSubset(1), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+            pub fn mul_scalar(self: anytype, scalar: T, res: anytype) BinaryRes(.GeometricProduct, @TypeOf(self), MVecSubset(1), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
                 //@compileLog(comptimePrint("mul_scalar self: {s}, res name: {s}, res type info: {?}", .{@typeName(@TypeOf(self)), @typeName(@TypeOf(res)), @typeInfo(@TypeOf(res))}));
                 const Result = BinaryRes(.GeometricProduct, @TypeOf(self), MVecSubset(1), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
                 //var result = get_result(res, Result);
@@ -3349,9 +3612,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 return result;
             }
 
-            pub fn op(left: anytype, right: anytype, res: anytype) BinaryRes(.OuterProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res)) {
-                const Result = BinaryRes(Alg.Operation.GeometricProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res));
-                @compileLog(comptimePrint("op self: {s}, res name: {s}, res type info: {?}", .{@typeName(@TypeOf(left)), @typeName(@TypeOf(res)), @typeInfo(@TypeOf(res))}));
+            pub fn op(left: anytype, right: anytype, res: anytype) BinaryRes(.OuterProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+                const Result = BinaryRes(Alg.Operation.GeometricProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
+                //@compileLog(comptimePrint("op self: {s}, res name: {s}, res type info: {?}", .{@typeName(@TypeOf(left)), @typeName(@TypeOf(res)), @typeInfo(@TypeOf(res))}));
                 var result = get_result(res, Result);
                 result.terms[0] += 0;
 
@@ -3374,8 +3637,14 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     }
                     break :blk left;
                 };
+                const res_to_use = blk: {
+                    if(@typeInfo(Result) == .Pointer) {
+                        break :blk result;
+                    }
+                    break :blk &result;
+                };
 
-                Alg.execute_sparse_vector_op(left_arg, right, result, comptime operation, comptime res_size, D);
+                Alg.execute_sparse_vector_op(left_arg, right, res_to_use, comptime operation, comptime res_size, D);
                 return result;
             }
 
@@ -3396,9 +3665,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 return result;
             }
 
-            pub fn ip(left: anytype, right: anytype, res: anytype) BinaryRes(.InnerProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res)) {
-                const Result = BinaryRes(.InnerProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res));
-                @compileLog(comptimePrint("ip self: {s}, res name: {s}, res type info: {?}", .{@typeName(@TypeOf(left)), @typeName(@TypeOf(res)), @typeInfo(@TypeOf(res))}));
+            pub fn ip(left: anytype, right: anytype, res: anytype) BinaryRes(.InnerProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+                const Result = BinaryRes(.InnerProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
+                //@compileLog(comptimePrint("ip self: {s}, res name: {s}, res type info: {?}", .{@typeName(@TypeOf(left)), @typeName(@TypeOf(res)), @typeInfo(@TypeOf(res))}));
                 const result = get_result(res, Result);
 
                 const LeftInner = UnwrapPtrType(@TypeOf(left)).@"0";
@@ -3420,7 +3689,14 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     break :blk left;
                 };
 
-                Alg.execute_sparse_vector_op(left_arg, right, result, comptime operation, comptime res_size, D);
+                const res_to_use = blk: {
+                    if(@typeInfo(Result) == .Pointer) {
+                        break :blk result;
+                    }
+                    break :blk &result;
+                };
+
+                Alg.execute_sparse_vector_op(left_arg, right, res_to_use, comptime operation, comptime res_size, D);
                 return result;
             }
 
@@ -3458,9 +3734,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             //count_flips(x, 1111...) = sum(count_bits(x >>= 1))
             //if in lhs bit i = 1, then flips += pow(2,i-1) (lsb is index 0)
 
-            pub fn rp(left: anytype, right: anytype, res: anytype) BinaryRes(Alg.Operation.GeometricProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res)) {
-                const Result = BinaryRes(.RegressiveProduct, @TypeOf(left), @TypeOf(right), @TypeOf(res));
-                const result = get_result(res, Result);
+            pub fn rp(left: anytype, right: anytype, res: anytype) BinaryRes(.RegressiveProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+                const Result = BinaryRes(.RegressiveProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
+                var result = get_result(res, Result);
 
                 const LeftInner = UnwrapPtrType(@TypeOf(left)).@"0";
                 const RightInner = UnwrapPtrType(@TypeOf(right)).@"0";
@@ -3469,7 +3745,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 const left_set: ux = LeftInner.subset_field;
                 const right_set: ux = RightInner.subset_field;
                 const res_set: ux = ResInner.subset_field;
-                const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.InnerProduct.BladeOp(), null, null);
+                const table = comptime Alg.cayley_table(left_set, right_set, Alg.Operation.RegressiveProduct.BladeOp(), null, null);
                 //tell the table inverter the res size, then we can expect it to return an array with comptime known size
                 const res_size = comptime count_bits(res_set);
                 const operation = comptime Alg.inverse_table_and_op_res_to_scatter_masks(table.snd, table.third, left_set, right_set, res_set, res_size);
@@ -3480,8 +3756,14 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     }
                     break :blk left;
                 };
+                const res_to_use = blk: {
+                    if(@typeInfo(Result) == .Pointer) {
+                        break :blk result;
+                    }
+                    break :blk &result;
+                };
 
-                Alg.execute_sparse_vector_op(left_arg, right, result, comptime operation, comptime res_size, D);
+                Alg.execute_sparse_vector_op(left_arg, right, res_to_use, comptime operation, comptime res_size, D);
                 return result;
             }
 
@@ -3508,7 +3790,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 }
             }
 
-            pub fn meet(left: anytype, right: anytype, res: anytype) MeetRes(@TypeOf(left), @TypeOf(right), @TypeOf(res)) {
+            pub fn meet(left: anytype, right: anytype, res: anytype) MeetRes(@TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
                 if(comptime Self.Algebra.alg_options.dual == true) {
                     return Self.rp(left,right,res);
                 } else {
@@ -3524,7 +3806,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 }
             }
 
-            pub fn join(left: anytype, right: anytype, res: anytype) JoinRes(@TypeOf(left), @TypeOf(right), @TypeOf(res)) {
+            pub fn join(left: anytype, right: anytype, res: anytype) JoinRes(@TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
                 if(comptime Self.Algebra.alg_options.dual == true) {
                     return Self.op(left,right,res);
                 } else {
@@ -3737,8 +4019,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             ///changes subsets
             /// if we have a blade at bit index i, our dual must have a blade at bit index basis_len - 1 - i
             /// in other words our dual has our subset but mirror across the middle at minimum
-            pub fn dual(source: *Self, drain: anytype) UnaryRes(.Dual, @TypeOf(source), @TypeOf(drain)) {
-                const Result = UnaryRes(.Dual, @TypeOf(source), @TypeOf(drain));
+            pub fn dual(source: *Self, drain: anytype) UnaryRes(.Dual, @TypeOf(source), if(@typeInfo(@TypeOf(drain)) == .Type) drain else @TypeOf(drain)) {
+                const Result = UnaryRes(.Dual, @TypeOf(source), if(@typeInfo(@TypeOf(drain)) == .Type) drain else @TypeOf(drain));
                 var result = get_result(drain, Result);
 
                 const SourceInner = UnwrapPtrType(@TypeOf(source)).@"0";
@@ -3762,9 +4044,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             }
 
 
-            pub fn undual(source: *Self, drain: anytype) UnaryRes(.Undual, @TypeOf(source), @TypeOf(drain)) {
-                const Result = UnaryRes(.Undual, @TypeOf(source), @TypeOf(drain));
-                const result = get_result(drain, Result);
+            pub fn undual(source: anytype, drain: anytype) UnaryRes(.Undual, @TypeOf(source), if(@typeInfo(@TypeOf(drain)) == .Type) drain else @TypeOf(drain)) {
+                const Result = UnaryRes(.Undual, @TypeOf(source), if(@typeInfo(@TypeOf(drain)) == .Type) drain else @TypeOf(drain));
+                var result = get_result(drain, Result);
 
                 const SourceInner = UnwrapPtrType(@TypeOf(source)).@"0";
                 const DrainInner = UnwrapPtrType(Result).@"0";
@@ -3775,12 +4057,19 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 const table = comptime Alg.unary_cayley_table(source_set, Alg.Operation.Undual.BladeOp(), null);
                 const operation = comptime Alg.unary_inverse_table_to_scatter_mask(table.snd, source_set, drain_set, count_bits(drain_set));
 
-                Alg.unary_execute_sparse_vector_op(source, result, comptime operation, count_bits(drain_set), D);
+                const res_to_use = blk: {
+                    if(@typeInfo(Result) == .Pointer) {
+                        break :blk result;
+                    }
+                    break :blk &result;
+                };
+                //comperror("drain set: {b}, Result: {s}, DrainInner: {s}", .{drain_set, @typeName(Result), @typeName(DrainInner)});
+                Alg.unary_execute_sparse_vector_op(source, res_to_use, comptime operation, comptime count_bits(drain_set), D);
                 return result;
             }
 
-            pub fn involution(source: *Self, drain: anytype) UnaryRes(.Involution, @TypeOf(source), @TypeOf(drain)) {
-                const Result = UnaryRes(.Involution, @TypeOf(source), @TypeOf(drain));
+            pub fn involution(source: *Self, drain: anytype) UnaryRes(.Involution, @TypeOf(source), if(@typeInfo(@TypeOf(drain)) == .Type) drain else @TypeOf(drain)) {
+                const Result = UnaryRes(.Involution, @TypeOf(source), if(@typeInfo(@TypeOf(drain)) == .Type) drain else @TypeOf(drain));
                 const result = get_result(drain, Result);
 
                 const SourceInner = UnwrapPtrType(@TypeOf(source)).@"0";
