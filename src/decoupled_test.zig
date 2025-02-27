@@ -547,6 +547,19 @@ const BasisVector = struct {
         });
     }
 
+    pub fn equals(self: BasisVector, other: BasisVector) bool {
+        if(!std.mem.eql(u8, self.name, other.name)) {
+            return false;
+        }
+        if(self.blade != other.blade) {
+            return false;
+        }
+        if(self.square != other.square) {
+            return false;
+        }
+        return true;
+    }
+
     pub fn flips(comptime self: @This(), comptime ordering: []const u8) isize {
         const name = self.name;
         if(name.len <= 1) {
@@ -996,8 +1009,10 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
 
     const info_args: type = _alg_info.GAlgebraInfoArgs;
     const alg_info: type = GAlgebraInfo(info_args.__dual, info_args.__basis, info_args.__ordering, info_args.__aliases);
+    const basis_size: usize = alg_info.signature.basis_size;
 
-    var _basis_values: []const BasisVector = &.{};
+    var _basis_values: [_values.len]BasisVector = undefined;
+    var _basis_orders: [_values.len]struct {usize, BasisVector} = undefined;
 
     var _subset: usize = 0;
 
@@ -1005,12 +1020,37 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
         const blade: usize = _values[i];
 
         const basis: BasisVector = alg_info.canonical_basis_with_flips[blade];
+        for(0..basis_size) |j| {
+            const ordered_blade = alg_info.ordered_basis_blades[j];
+            if(!basis.equals(ordered_blade)) {
+                //@compileLog(comptimePrint("{} != {}", .{basis, ordered_blade}));
+                continue;
+            }
+            _basis_orders[i] = .{j, basis};
+            _basis_values[i] = basis;
+        }
 
-        _basis_values = _basis_values ++ .{basis};
+        //_basis_values = _basis_values ++ .{basis};
         _subset |= (1 << blade);
     }
 
-    const basis_size: usize = alg_info.signature.basis_size;
+    //insertion sort
+    for(1.._values.len) |i| {
+        //@compileLog(comptimePrint("_basis_orders: {s}, alg_info.ordered_basis_blades: {s}", .{_basis_orders, alg_info.ordered_basis_blades}));
+        const elem: struct {usize, BasisVector} = _basis_orders[i];
+        const key: usize = elem.@"0";
+        var j: isize = i-1;
+        while(j >= 0 and _basis_orders[j].@"0" > key) {
+            _basis_orders[j + 1] = _basis_orders[j];
+            j -= 1;
+        }
+        _basis_orders[j + 1] = elem;
+    }
+
+    for(0.._values.len) |i| {
+        _basis_values[i] = _basis_orders[i].@"1";
+    }
+
     //const canonical_basis_with_flips: [basis_size]BasisVector = alg_info.canonical_basis_with_flips;
 
     
@@ -1025,7 +1065,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
 
         pub const subset = __subset;
 
-        pub const basis_values: []const BasisVector = __basis_values;
+        pub const basis_values: []const BasisVector = &__basis_values;
         pub const values_arg: []const usize = _values;
 
         pub const num_terms = count_bits(subset);
@@ -1901,11 +1941,11 @@ pub fn main() !void {
     const ordering: []const u8 = "ixy,xy,s,xi,iy,y,x,i";
     const galg = GAlgebraInfo(true, "0i,+x,+y", ordering, &.{});
     const MVecT = MVecSubset(galg, f64, &.{0, 1, 2, 4});
-    @compileLog(comptimePrint("MVecT subset: {b}", .{MVecT.subset}));
-    const mv1: MVecT = comptime MVecT.init_raw(.{1.0, 2.0, 3.0, 4.0});
-    const mv2: MVecT = comptime MVecT.init_raw(.{3.2, -4.1, 1.2, 7.1});
-    @compileLog(comptimePrint("mv1: {}, mv2: {}", .{mv1, mv2}));
-    const mv3 = comptime mv1.gp(mv2, null);
-    //debug.print("{} * {} = {}\n", .{mv1, mv2, mv3});
-    @compileLog(comptimePrint("{} * {} = {}", .{mv1, mv2, mv3}));
+    //@compileLog(comptimePrint("MVecT subset: {b}", .{MVecT.subset}));
+    const mv1: MVecT = MVecT.init_raw(.{1.0, 2.0, 3.0, 4.0});
+    const mv2: MVecT = MVecT.init_raw(.{3.2, -4.1, 1.2, 7.1});
+    //@compileLog(comptimePrint("mv1: {}, mv2: {}", .{mv1, mv2}));
+    const mv3 = mv1.gp(mv2, null);
+    debug.print("{} * {} = {}\n", .{mv1, mv2, mv3});
+    //@compileLog(comptimePrint("{} * {} = {}", .{mv1, mv2, mv3}));
 }
