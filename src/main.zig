@@ -415,8 +415,51 @@ pub fn Mover(A: type) type {
     };
 }
 
+pub fn Vertex(comptime d: usize) type {
+    return extern struct { 
+        pub const Self = @This();
+        pub const D: usize = d;
+        pub const PGA = Algebra(d, 0, 1, f64, .{.dual = true});
+        pub const Point = PGA.Point;
+        position: [d]f64, 
+        color: [3]f64, 
+        texture: [2]f64,
+
+        pub fn from_point(p: *Point, color: [3]f64, texture: [2]f64) !Self {
+            
+            var ret: Self = undefined;
+            const pseudoscalar: PGA.ud = @truncate(std.math.pow(usize, 2, d+1) - 1);
+            const one: PGA.ux = 0b1;
+            inline for(1..d+1) |axis| {
+                //we need to take the dual of e_axis
+                const blade: PGA.ud = @as(PGA.ud, @truncate(axis)) ^ pseudoscalar;
+                const point_idx: PGA.ud = count_bits(Point.subset_field & ((one << blade) -% 1));
+                ret.position[axis-1] = p.terms[point_idx];
+            }
+            @memcpy(&ret.color, color);
+            @memcpy(&ret.texture, texture);
+            return ret;
+        }
+    };
+}
 
 pub fn main() !void {
+    @setEvalBranchQuota(1000000000);
+
+    const d: usize = comptime 3;
+    const alg = Algebra(d, 0, 1, f64, .{.dual = true});
+    const Plane = alg.KVector(1);
+
+    var mv1: Plane = comptime Plane.init_zero();
+    _=(&mv1).set_all(&.{.{.e0, 2.1}, .{.e1, 1.2}, .{.e2, 3.6}});
+    var mv2: Plane = comptime Plane.init_zero();
+    _=(&mv2).set_all(&.{.{.e0, 0.4}, .{.e1, -1.6}, .{.e2, 4.8}});
+    const mv3 = mv1.gp(mv2, null);
+    _=mv3;
+    //@compileLog(comptimePrint("{} * {} = {}", .{mv1, mv2, mv3}));
+}
+
+pub fn main2() !void {
 
     @setEvalBranchQuota(10000000);
     //const alg = Algebra(3, 0, 1, f64);
@@ -535,7 +578,6 @@ pub fn main() !void {
             }
             _=&edges[edge_i].zeros();
             _=p_i.rp(p_j, &edges[edge_i]);
-            //const x =p_i.rp(p_j, alg.NVec);
             //var res: Line = undefined;
             //_=res.zeros();
             //_=p_i.gp_old2(p_j, &res);
@@ -548,13 +590,18 @@ pub fn main() !void {
     debug.print("\n-----------------------\n",.{});
     //const state: struct{Motor, Line} = undefined;
     //_=state;
-    var M: Motor = undefined;
-    _=M.init(&.{.{.e01, 0.1}});
+    //var M: Motor = undefined;
+    var tM: alg.NVec = undefined;
+    var tM2 = tM.init(&.{.{.e01, 0.1}}).exp(10);
+    //@compileLog(comptimePrint("M.init(...) {s}", .{@typeName(@TypeOf(M.init(&.{.{.e01, 0.1}}).exp(1000)))}));
+    var M: Motor = tM2.copy(Motor);
+    debug.print("\n\t\tmotor: {}", .{M});
+
     var B: Line = undefined;
     _=B.init(&.{.{.e01,0.1},.{.e02,1.3},.{.e13,0.5}});
 
-    const dt: f64 = 1/60;
-    const num_iters: usize = 1;
+    const dt: f64 = 0.1;
+    const num_iters: usize = 2;
     //_=num_iters;
     const sub_steps: usize = 10;
 
@@ -563,18 +610,278 @@ pub fn main() !void {
     var current_edges: [num_edges]Line = undefined;
     @memcpy(&current_edges, &edges);
 
+
+    glfw.setErrorCallback(errorCallback);
+    if(!glfw.init(.{})) {
+        debug.print("failed to init GLFW: {any}", .{glfw.getErrorString()});
+        std.process.exit(1);
+    }
+    defer glfw.terminate();
+
+    const window_width: usize = 640;
+    const window_height: usize = 480;
+
+    const window = glfw.Window.create(window_width, window_height, "Test", null, null, .{
+        .context_version_major = gl.info.version_major,
+        .context_version_minor = gl.info.version_minor,
+
+        .opengl_profile = switch(gl.info.api) {
+            .gl => .opengl_core_profile,
+            .gles => .opengl_any_profile,
+            else => comptime unreachable,
+        },
+        .opengl_forward_compat = gl.info.api == .gl,
+    }) orelse {
+        debug.print("failed to create a GLFW window: {any}", .{glfw.getErrorString()});
+        std.process.exit(1);
+    };
+    defer window.destroy();
+
+    glfw.makeContextCurrent(window);
+    defer glfw.makeContextCurrent(null);
+
+    if(!procs.init(glfw.getProcAddress)) return error.InitFailed;
+    gl.makeProcTableCurrent(&procs);
+    defer gl.makeProcTableCurrent(null);
+
+    const shader_source_preamble = switch (gl.info.api) {
+        .gl => (
+            \\#version 410 core
+            \\
+        ),
+        .gles => (
+            \\#version 300 es
+            \\precision highp float;
+            \\
+        ),
+        else => comptime unreachable,
+    };
+    const vertex_shader_source =
+        \\in vec4 a_Position;
+        \\//in vec4 a_Color;
+        \\in vec2 tex_coord;
+        \\
+        \\out vec4 v_Color;
+        \\out vec2 tex_coord_0;
+        \\
+        \\void main() {
+        \\    tex_coord_0 = tex_coord;
+        \\    gl_Position = a_Position;
+        \\    //v_Color = a_Color;
+        \\}
+        \\
+    ;
+    const fragment_shader_source =
+        \\in vec2 tex_coord_0;
+        \\//in vec4 v_Color;
+        \\out vec4 f_Color;
+        \\uniform sampler2D texture1;
+        \\
+        \\void main() {
+        \\    f_Color = texture(texture1, tex_coord_0);
+        \\}
+        \\
+    ;
+
+    // For the sake of conciseness, this example doesn't check for shader compilation/linking
+    // errors. A more robust program would use 'GetShaderiv'/'GetProgramiv' to check for errors.
+    const program = create_program: {
+        const vertex_shader = gl.CreateShader(gl.VERTEX_SHADER);
+        defer gl.DeleteShader(vertex_shader);
+
+        gl.ShaderSource(
+            vertex_shader,
+            2,
+            &[2][*]const u8{ shader_source_preamble, vertex_shader_source },
+            &[2]c_int{ @intCast(shader_source_preamble.len), @intCast(vertex_shader_source.len) },
+        );
+        gl.CompileShader(vertex_shader);
+
+        const fragment_shader = gl.CreateShader(gl.FRAGMENT_SHADER);
+        defer gl.DeleteShader(fragment_shader);
+
+        gl.ShaderSource(
+            fragment_shader,
+            2,
+            &[2][*]const u8{ shader_source_preamble, fragment_shader_source },
+            &[2]c_int{ @intCast(shader_source_preamble.len), @intCast(fragment_shader_source.len) },
+        );
+        gl.CompileShader(fragment_shader);
+
+        const program = gl.CreateProgram();
+
+        gl.AttachShader(program, vertex_shader);
+        gl.AttachShader(program, fragment_shader);
+        gl.LinkProgram(program);
+
+        break :create_program program;
+    };
+    defer gl.DeleteProgram(program);
+
+    gl.UseProgram(program);
+    defer gl.UseProgram(0);
+
+    var vao: c_uint = undefined;
+    gl.GenVertexArrays(1, @ptrCast(&vao));
+    defer gl.DeleteVertexArrays(1, @ptrCast(&vao));
+
+    gl.BindVertexArray(vao);
+    defer gl.BindVertexArray(0);
+
+    var vbo: c_uint = undefined;
+    gl.GenBuffers(1, @ptrCast(&vbo));
+    defer gl.DeleteBuffers(1, @ptrCast(&vbo));
+
+    gl.BindBuffer(gl.ARRAY_BUFFER, vbo);
+    defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
+
+    const Vertex_ = extern struct { position: [2]f32, color: [3]f32, texture: [2]f32 };
+    // zig fmt: off
+    const vertices_gl = [_]Vertex_{
+        .{ .position = .{  -1.0, -1.0 }, .color = .{ 1, 0, 0 }, .texture = .{1, 1} },
+        .{ .position = .{  -1.0 , 1.0 }, .color = .{ 0, 1, 0 }, .texture = .{1, 0}  },
+        .{ .position = .{  -1.0, -1.0 }, .color = .{ 0, 0, 1 }, .texture = .{0, 0}  },
+        .{ .position = .{   1.0,  1.0 }, .color = .{ 1, 1, 0 }, .texture = .{0, 1}  },
+    };
+    // zig fmt: on
+
+    gl.BufferData(gl.ARRAY_BUFFER, @sizeOf(@TypeOf(vertices_gl)), &vertices_gl, gl.STATIC_DRAW);
+
+
+    debug.print("\nattrib loc (position): {}", .{gl.GetAttribLocation(program, "a_Position")});
+    const position_attrib: c_uint = @intCast(gl.GetAttribLocation(program, "a_Position"));
+    gl.EnableVertexAttribArray(position_attrib);
+    gl.VertexAttribPointer(
+        position_attrib,
+        @typeInfo(@TypeOf(@as(Vertex_, undefined).position)).Array.len,
+        gl.FLOAT,
+        gl.FALSE,
+        @sizeOf(Vertex_),
+        @offsetOf(Vertex_, "position"),
+    );
+    debug.print("\nattrib loc (color): {}", .{gl.GetAttribLocation(program, "a_Color")});
+    debug.print("\nattrib loc (tex_coord): {}", .{gl.GetAttribLocation(program, "tex_coord")});
+
+
+    //const color_attrib: c_uint = @intCast(gl.GetAttribLocation(program, "a_Color"));
+    //gl.EnableVertexAttribArray(color_attrib);
+    //gl.VertexAttribPointer(
+    //    color_attrib,
+    //    @typeInfo(@TypeOf(@as(Vertex, undefined).color)).Array.len,
+    //    gl.FLOAT,
+    //    gl.FALSE,
+    //    @sizeOf(Vertex),
+    //    @offsetOf(Vertex, "color"),
+    //);
+
+    var texture_attrib: c_uint = @intCast(gl.GetAttribLocation(program, "tex_coord"));
+    gl.EnableVertexAttribArray(texture_attrib);
+    gl.VertexAttribPointer(
+        texture_attrib,
+        @typeInfo(@TypeOf(@as(Vertex_, undefined).texture)).Array.len,
+        gl.FLOAT,
+        gl.FALSE,
+        @sizeOf(Vertex_),
+        @offsetOf(Vertex_, "texture"),
+    );
+
+    var sing_ptr = &texture_attrib;
+    const arr_ptr = sing_ptr[0..1];
+    const many_ptr: [*]c_uint = arr_ptr;
+    gl.GenTextures(1, many_ptr);
+    gl.BindTexture(gl.TEXTURE_2D, texture_attrib);
+
+    const color_channels: usize = 4;
+
+    var cpu_pixel_buffer: [window_width * window_height * color_channels]u8 = undefined;
+    for(0..cpu_pixel_buffer.len) |i| {
+        cpu_pixel_buffer[i] = 255;
+    }
+
+    var camera_pos: [4]f64 = undefined;
+    for(0..4) |i| {
+        camera_pos[i] = 0.0;
+    }
+
+
+
+    gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, window_width, window_height, 0, gl.RGBA, gl.UNSIGNED_BYTE, &cpu_pixel_buffer);
+    gl.Uniform1i(gl.GetUniformLocation(program, "texture1"), 0);
+
+    main_loop: while (true) {
+        glfw.waitEvents();
+        if (window.shouldClose()) break :main_loop;
+
+        // Update the viewport to reflect any changes to the window's size.
+        const fb_size = window.getFramebufferSize();
+        gl.Viewport(0, 0, @intCast(fb_size.width), @intCast(fb_size.height));
+
+
+
+        // Clear the window.
+        //gl.ClearBufferfv(gl.COLOR, 0, &[4]f32{ 1, 1, 1, 1 });
+
+        // Draw the vertices.
+        gl.ClearColor(0.0,0.0,0.0,1.0);
+
+        gl.TexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, window_width, window_height, 0, gl.RGBA, gl.UNSIGNED_BYTE, &cpu_pixel_buffer);
+        gl.GenerateMipmap(gl.TEXTURE_2D);
+
+
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);	// set texture wrapping to GL_REPEAT (default wrapping method)
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        // set texture filtering parameters
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        gl.TexParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+
+        gl.BindTexture(gl.TEXTURE_2D, texture_attrib);
+        //glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+        gl.DrawArrays(gl.TRIANGLES, 0, vertices.len);
+        
+        // Perform some wizardry that prints a nice little message in the center :)
+        //gl.Enable(gl.SCISSOR_TEST);
+        //const magic: u154 = 0x3bb924a43ddc000170220543b8006ef4c68ad77;
+        //const left = @divTrunc(@as(gl.int, @intCast(fb_size.width)) - 11 * 8, 2);
+        //const bottom = @divTrunc((@as(gl.int, @intCast(fb_size.height)) - 14 * 8) * 2, 3);
+        //var i: gl.int = 0;
+        //while (i < 154) : (i += 1) {
+        //    if (magic >> @intCast(i) & 1 != 0) {
+        //        gl.Scissor(left + @rem(i, 11) * 8, bottom + @divTrunc(i, 11) * 8, 8, 8);
+        //        gl.ClearBufferfv(gl.COLOR, 0, &[4]f32{ 0, 0, 0, 1 });
+        //    }
+        //}
+        //gl.Disable(gl.SCISSOR_TEST);
+
+        window.swapBuffers();
+    }
+
+    //@compileLog(comptimePrint("@typeName(@TypeOf(Motor)) {s}", .{@typeName(@TypeOf(Motor))}));
+    //@typeInfo(@TypeOf(type)) = builtin.Type{.Type = void}
+    //@typeInfo(type) = builtin.Type{.Struct = builtin.Type.Struct{...}}
+    //@typeInfo(@TypeOf(var)) = builtin.Type{.Struct = builtin.Type.Struct{...}}
+    //@typeInfo(@TypeOf(&var)) = builtin.Type{.Pointer = builtin.Type.Pointer{..., .child = builtin.Type.Struct{...}}}
+    //@typeInfo(@TypeOf(null)) = builtin.Type{.Null}
+    //@compileLog(comptimePrint("@typeInfo(@TypeOf(Motor)) = {}---------- @typeInfo(Motor) = {} ---------- @typeInfo(@TypeOf(M)) = {} ----------- @typeInfo(@TypeOf(&M)) {} ---------- @typeInfo(@TypeOf(null)) {}", .{@typeInfo(@TypeOf(Motor)), @typeInfo(Motor), @typeInfo(@TypeOf(M)), @typeInfo(@TypeOf(&M)), @typeInfo(@TypeOf(null))}));
+
     //const t = @TypeOf(M).BinaryRes(.GeometricProduct, @TypeOf(M), alg.MVecSubset(1), @TypeOf(Motor));
     //const t2 = @TypeOf(M).BinaryRes(.GeometricProduct, @TypeOf(M), alg.MVecSubset(1), Motor);
     //@compileLog(comptimePrint("t: {s}, info: {}, Motor t {s} @TypeOf(Motor) {s} @typeInfo(@TypeOf(Motor)) {}  t2 type {s} t2 info: {} info {} ", .{@typeName(t), @typeInfo(t), @typeName(Motor), @typeName(@TypeOf(Motor)), @typeInfo(@TypeOf(Motor)), @typeName(t2), @typeInfo(t2), @typeInfo(Motor)}));
     for(0..num_iters) |iter| {
+        debug.print("\n\titer {} M {} B {}", .{iter, M, B});
         for(0..sub_steps) |_| {
             //const multd_M = M.mul_scalar(-0.5, null);
             
             var dM = M.mul_scalar( -0.5, Motor).gp(&B, Motor);
             var dB = B.dual(null).gp(B, null).sub(B.gp(B.dual(null), null), Line).undual(null).mul_scalar(-0.5, Line);
 
-            _=M.add(dM.mul_scalar(state_step_size, null), &M);
-            _=B.add(dB.mul_scalar(state_step_size, null), &B);
+
+            //const dMs = dM.mul_scalar(state_step_size, null);
+
+            const M2 =M.add(dM.mul_scalar(state_step_size, null), Motor);
+            const B2 =B.add(dB.mul_scalar(state_step_size, null), Line);
+            //debug.print("\n\tdm {} (M {} -> {}) db {} (B {} -> {}), dMs {}, state_step_size {}, dt {}", .{dM, M, M2, dB, B, B2, dMs, state_step_size, dt});
+            M = M2;
+            B = B2;
             //const ds: struct{Motor, Line} = .{
             //    y,
             //    B.dual(null).gp(B, null).sub(B.gp(B.dual(null), null), null).undual(null).mul_scalar(-0.5, null)
@@ -584,9 +891,9 @@ pub fn main() !void {
         }
      
         for(0..num_edges) |i| {
-            _=M.sandwich(&edges[i], &current_edges[i]);
+            _=M.sandwich(edges[i], &current_edges[i]);
      
-            debug.print("\niter {}: edge {} -> {} under motor {}", .{iter, &edges[i], &current_edges[i], &M});
+            debug.print("\niter {}: edge {} -> {} under motor {}", .{iter, edges[i], current_edges[i], &M});
             _=&current_edges[i].zeros();
         } 
     }
@@ -602,34 +909,7 @@ pub fn main() !void {
     
 }
 
-pub fn dstate(comptime Alg: type, d: *struct{Alg.Motor, Alg.KVector(2)}) struct{Alg.Motor, Alg.KVector(2)} {
-    //var nM: Alg.Motor = d.@"0".copy(Alg.Motor);
-    //var nB: Alg.KVector(2) = d.@"1".copy(Alg.KVector(2));
 
-    return .{
-        d.@"0".mul_scalar(-0.5, null).gp(d.@"1", null),
-        d.@"1".dual(null).gp(d.@"1", null).sub(d.@"1".gp(d.@"1".dual(null), null), null).undual(null).mul_scalar(-0.5, null)
-    };
-}
-
-pub fn forques(comptime Alg: type, M: *Alg.Motor, _: *Alg.KVector(2), attach: *Alg.Point, point_in_body: *Alg.Point) Alg.Motor {
-    const Motor = Alg.Motor;
-    const M_rev = M.copy(@truncate(~0)).revert();
-    const g: Motor = blk: {
-        var G: Motor = undefined;
-        G.zeros();
-        G.get(.e02).* = -9.81;
-        var cop: Alg.NVec = undefined;
-        break :blk (&M_rev).sandwich(&G).dual(&cop).copy(Motor.subset_field);
-    };
-    //what if all ops had the default return type determined by the blades returned by their cayley tables
-    var hooke: Motor = M_rev.sandwich(attach).rp(point_in_body).mul_scalar(1.05, .stack_alloc, null).copy(Motor);
-    var ret: Motor = undefined;
-    _=ret.zeros();
-    _=(&hooke).add(&g, &ret);
-    return ret;
-    //var gravity = 
-}
 
 pub fn create_program() !void {
     glfw.setErrorCallback(errorCallback);
@@ -756,9 +1036,9 @@ pub fn create_program() !void {
     gl.BindBuffer(gl.ARRAY_BUFFER, vbo);
     defer gl.BindBuffer(gl.ARRAY_BUFFER, 0);
 
-    const Vertex = extern struct { position: [2]f32, color: [3]f32, texture: [2]f32 };
+    const Vertex_ = extern struct { position: [2]f32, color: [3]f32, texture: [2]f32 };
     // zig fmt: off
-    const vertices = [_]Vertex{
+    const vertices = [_]Vertex_{
         .{ .position = .{  -1.0, -1.0 }, .color = .{ 1, 0, 0 }, .texture = .{1, 1} },
         .{ .position = .{  -1.0 , 1.0 }, .color = .{ 0, 1, 0 }, .texture = .{1, 0}  },
         .{ .position = .{  -1.0, -1.0 }, .color = .{ 0, 0, 1 }, .texture = .{0, 0}  },
@@ -2254,20 +2534,6 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
             pub fn BladeOp(self: @This()) type {
                 return switch (self) {
-                    //a blade is a non-scalar element of the tensor product of a vector space with the algebra's signature as
-                    // its basis elements (+ R), with itself anywhere from 1 to dim(algebra) times.
-                    // you can define the n-fold tensor product of a vector space with itself as the tensor power of that space
-                    // for GA we dont just want the tensor power as that creates blades with multiple of the same 1 factors,
-                    //  we want a product that only creates new basis dimensions when both factor dimensions are different
-                    //  this is the outer product: outer(ijk..., ...mil...) = 0
-                    // so we want the n-fold outer power of the vector space (the vector space op'd with itself n times)
-                    // you can define the underlying vector space with the algebra's signature as its basis elements as the 
-                    //      1-space or signature space, R is always the 0-space
-                    // the algebra is the (unique) tensor sum of all outer powers of the 1-space, with powers from 0 to dim(alg)
-                    // a k vector is an element of the kth power of the 1-space
-                    // a k blade is a multiple of a basis vector of the k-space
-                    // for a 1-space of dim n, there is no n+1 space because there will be a repeated factor
-                    
                     
                     .GeometricProduct => struct {
                         pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.GeometricProduct) {
@@ -2278,7 +2544,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             if (squares & zero_mask != 0) {
                                 return BladeTerm{ .value = 0, .blade = 0 };
                             }
-                            const neg_powers_mod_2: isize = @intCast(((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1);
+                            const neg_powers_mod_2: isize = @intCast((count_bits(squares & neg_mask) ^ count_flips(lhs, rhs)) & 1);
                             const value: isize = -2 * neg_powers_mod_2 + 1;
                             const ret_val = left.value * right.value * @as(f64, @floatFromInt(value));
                             if(@round(ret_val) != ret_val) {
@@ -2315,7 +2581,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                             const ul = lhs & blade;
                             const ur = rhs & blade;
 
-                            const neg_powers_mod_2: isize = @intCast(((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1);
+                            const neg_powers_mod_2: isize = @intCast((count_bits(squares & neg_mask) ^ count_flips(lhs, rhs)) & 1);
                             const value: isize = -2 * neg_powers_mod_2 + 1;
                             return .{ .value = if (ul == 0 or ur == 0) left.value * right.value * value else 0, .blade = blade };
                         }
@@ -2331,7 +2597,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                                 return .{ .value = 0, .blade = blade };
                             }
                              
-                            const value = -2 * (((squares & neg_mask) ^ count_flips(lhs, rhs)) & 1) + 1;
+                            const value = -2 * ((count_bits(squares & neg_mask) ^ count_flips(lhs, rhs)) & 1) + 1;
                             return .{ .value = value, .blade = blade };
                             //const dual = Operation.Dual.BladeOp();
                             //const undual = Operation.Undual.BladeOp();
@@ -2363,7 +2629,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     .Dual => struct {
                         pub fn eval(us: BladeTerm) Codomain(.Dual) {
                             const squares = us.blade & pseudoscalar_blade;
-                            return .{ .value = us.value * (-2 * ((squares & neg_mask) ^ count_flips(us.blade, pseudoscalar_blade) & 1)) + 1, .blade = us.blade ^ pseudoscalar_blade };
+                            return .{ .value = us.value * (-2 * (count_bits(squares & neg_mask) ^ count_flips(us.blade, pseudoscalar_blade) & 1)) + 1, .blade = us.blade ^ pseudoscalar_blade };
                         }
                     },
 
@@ -2438,6 +2704,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         //step 1: create the masked cayley space
         //if this is generic to the transformation we need to tell it how to do each operand blade n-tuple
         pub fn cayley_table(lhs_subset: ux, rhs_subset: ux, op: anytype, lhs_known_vals: ?[basis_size]struct { known: bool, val: T }, rhs_known_vals: ?[basis_size]struct { known: bool, val: T }) CayleyReturn {
+            @setEvalBranchQuota(10000000);
             //inputs to outputs under op = the image, unsimplified
             // nth axis here is the nth operand acted upon by op. the value stored here is the value returned by op given those operands
             var ret: [basis_len][basis_len]BladeTerm = .{.{undefined} ** basis_len} ** basis_len;
@@ -2480,7 +2747,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         pub fn inverse_table_and_op_res_to_scatter_masks(comptime inv: [basis_len][basis_len]ProdTerm, comptime inv_indices: [basis_len]usize, comptime lhs_subset: ux, comptime rhs_subset: ux, comptime superset: ux, comptime len: usize) struct { [basis_len][len]i32, [basis_len][len]i32, [basis_len][len]T } {
             //for full multivectors, result[i] = sigma(inverse[i][0..inv_indices[i]])
             //in the end we want to do inline for(mask_a, mask_b, mask_coeff) |ma,mb,mc| {
-            //  res.* += @shuffle(lhs.val, @splat(1), ma)}
+            //  res.* += @shuffle(lhs.terms, @splat(1), ma) * @shuffle(rhs.terms, @splat(1), mb) * mc
             // this means that mask_a[i] = ma must be of the form: {-1,-1,5,4,2,-1,1,-1,3,0}
             // if lhs is len 6, its being gathered into a result type of len 10, and:
             // res[0] = op(1,rhs[x]) + ... = inv[0][0] ** 2 + inv[0][1] ** 2 + inv[0][2] ** 2 + ... + inv[0][inv_indices[0]] ** 2
@@ -2500,7 +2767,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             //of the form: [ith term][res blade idx in superset] = an index in the lhs.terms array (inv[res blade][ith].left_blade) if lhs_subset & (0b1 << res blade) != 0 else -1
             //execute_sparse_vector_op() needs to iterate through the adds we give them, num_terms of these,
             //meaning that at least one of the result vectors elements = t1 + t2 + t3 + ... + t[num_terms]
-            //if either of the lhs or rhs masks ith term = {-1,...,-1} for count_bits(superset) then that term is invalid and we continue
+            //if both of the lhs or rhs masks ith term = {-1,...,-1} for count_bits(superset) then that term is invalid and we continue
             comptime var lhs_masks: [basis_size][len]i32 = .{.{-1} ** len} ** basis_len;
             comptime var rhs_masks: [basis_size][len]i32 = .{.{-1} ** len} ** basis_len;
             comptime var coeff_masks: [basis_size][len]T = .{.{0} ** len} ** basis_len;
@@ -2546,7 +2813,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     const left_operand_blade = inv_term.left_blade;
                     const right_operand_blade = inv_term.right_blade;
 
-                    const left_t_blade: std.math.IntFittingRange(0, 15) = @truncate(left_operand_blade);
+                    const left_t_blade: ud = @truncate(left_operand_blade);
                     const right_t_blade: ud = @truncate(right_operand_blade);
 
                     //const xd = (one << left_operand_blade) - 1;
@@ -2906,7 +3173,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             }
 
             pub fn zeros(self: *Self) *Self {
-                inline for (0..Self.num_terms) |i| {
+                for (0..Self.num_terms) |i| {
                     //self.get(.ptr, b).* = 0;
                     self.terms[i] = 0.0;
                 }
@@ -3115,9 +3382,23 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             /// given the operands. if the result type is a pointer or a type then the output is forced to be that type
             pub fn BinaryRes(comptime opr: Operation, comptime left_outer_type: type, comptime right_outer_type: type, comptime res_outer_type: type) type {
                 const res = res_outer_type;//ResType(res_outer_type);
+                //users of users of this function can pass in a pointer, type, or null for the result arg
+                //pointer -> use the .child type as the logical type of the result, and fill in the results in that array
+                //type -> create a new instance of that type as the result
+                //null -> infer the type of the result based on opr
+
+                //for the left and right types they can pass in a pointer or struct instance
+                //pointer -> use the .child type as the logical type of that arg
+                //struct -> use that structs type as the logical type, and proceed as normal
+
+                //we should be guaranteed that res_outer_type is either .Pointer, .Struct, or .Null (@TypeOf(type) is lossy)
+
                 const res_info = @typeInfo(res);
                 //@compileLog(comptimePrint("BinaryRes: res: {s} info: {}", .{@typeName(res), res_info}));
-                if(res_info == .Type or res_info == .Pointer or res_info == .Struct) {
+                if(res_info == .Type) {
+                    @compileError(comptimePrint("unguarded type passed into BinaryRes()! @TypeOf(type) is lossy so you have to pass in the type directly if a user passes in a type", .{}));
+                }
+                if(res_info == .Pointer or res_info == .Struct) {
                     return res;
                 }
 
@@ -3131,7 +3412,30 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 const right_set: ux = right_type.subset_field;
                 
                 const table = comptime Alg.cayley_table(left_set, right_set, opr.BladeOp(), null, null);
+
+                //comptime {
+                //    var str: [1000]u8 = .{0} ** 1000;
+                //    var c = 0;
+                //    for(0..basis_size) |b| {
+                //        const slc: []u8 = try std.fmt.bufPrint(str[c..str.len], "blade {b} =", .{b});
+                //        c += slc.len;
+                //        for(0..table.third[b]) |i| {
+                //            const fmt: []const u8 = if(i == 0) " {} from {b} * {b}" else " + {} from {b} * {b}";
+                //            const term: ProdTerm = table.snd[b][i];
+                // 
+                // 
+                //            const slc2: []u8 = try std.fmt.bufPrint(str[c..str.len], fmt, .{term.mult, term.left_blade, term.right_blade});
+                //            c += slc2.len;
+                //        }
+                //        for(0..3) |_| {
+                //            str[c] = ' ';
+                //            c += 1;
+                //        }
+                //    }
+                //    @compileLog(str[0..c]);
+                //}
                 const ret_subset: ux = nonzero_subset(table.snd, table.third);
+                //@compileLog(comptimePrint("{b} {any} {b} = {b}", .{left_set, opr, right_set, ret_subset}));
                 return MVecSubset(ret_subset);
             }
 
@@ -3139,7 +3443,10 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             pub fn UnaryRes(comptime opr: Alg.Operation, source: type, drain: type) type {
                 const res_info = @typeInfo(drain);
 
-                if(res_info == .Type or res_info == .Pointer or res_info == .Struct) {
+                if(res_info == .Type) {
+                    @compileError(comptimePrint("unguarded type passed into UnaryRes()! @TypeOf(type) is lossy so you have to pass in the type directly if a user passes in a type", .{}));
+                }
+                if(res_info == .Pointer or res_info == .Struct) {
                     return drain;
                 }
 
@@ -3184,6 +3491,9 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 //if passed_in_res is null or a type, create a new true_res and return it. otherwise
             }
 
+            //TODO: figure out how to iterate through elements of the current subset that match certain criteria
+            //pub fn euclidian_elements(self: *Self)
+
             pub fn Add(comptime lhs: type, comptime rhs: type, comptime res: type) type {
                 const res_info = @typeInfo(res);
                 if(res_info == .Type or res_info == .Pointer or res_info == .Struct) {
@@ -3225,12 +3535,16 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
 
                 const left_type: type = UnwrapPtrType(@TypeOf(lhs)).@"0";
                 const right_type: type = UnwrapPtrType(@TypeOf(rhs)).@"0";
+                //@compileLog(comptimePrint("right type name: {s}, info {} ------------------------------------- rhs name {s} info {}", .{@typeName(right_type), @typeInfo(right_type), @typeName(@TypeOf(rhs)), @typeInfo(@TypeOf(rhs))}));
                 const ResInner: type = UnwrapPtrType(Result).@"0";
 
                 const left_set: ux = comptime blk: {
                     break :blk left_type.subset_field;
                 };
                 const right_set: ux = comptime blk: {
+                    if(@typeInfo(right_type) == .Pointer) {
+                        @compileError(comptimePrint("right type info {} rhs type info {}",.{@typeInfo(right_type), @typeInfo(@TypeOf(rhs))}));
+                    }
                     break :blk right_type.subset_field;
                 };
                 const res_set: ux = comptime blk: {
@@ -4163,7 +4477,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                 return cop;
             }
 
-            pub fn sandwich(bread: *Self, meat: anytype, res: anytype) BinaryRes(.SandwichProduct, @TypeOf(bread), @TypeOf(meat), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+            pub fn sandwich(bread: anytype, meat: anytype, res: anytype) BinaryRes(.SandwichProduct, @TypeOf(bread), @TypeOf(meat), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
                 const Result = BinaryRes(.SandwichProduct, @TypeOf(bread), @TypeOf(meat), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
                 var result = get_result(res, Result);
 
@@ -4225,6 +4539,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             }
 
             fn get_square(self: *Self) NVec {//TODO: might blow up if something squares to a multivector
+                @setEvalBranchQuota(1000000000);
                 var ret = NVec{.terms=@splat(0)};
 
                 var x = self.copy(NVec);
@@ -4235,6 +4550,7 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
             }
 
             pub fn exp(self: *Self, terms: usize) NVec {
+                @setEvalBranchQuota(1000000000);
                 var ret = NVec{.terms = @splat(0)};
                 var cop = self.copy(NVec);
 
@@ -4247,13 +4563,13 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     const alpha = @sqrt(@abs(square.terms[0]));
 
                     if(squared_value < 0.0) {
-                        _=cop.mul_scalar(@sin(alpha) / alpha, .ptr, .{.ptr=&ret});
+                        _=cop.mul_scalar(@sin(alpha) / alpha, &ret);
                         ret.terms[0] += @cos(alpha);
                         //debug.print("\n\t\texp({}) = cos(alpha) + (sin(alpha)/alpha)*self = {} (square is {d:.4}, alpha {d:.4})", .{self, ret, squared_value, alpha});
                         return ret;
                     }
                     if(squared_value > 0.0) {
-                        _=cop.mul_scalar(sinh(alpha) / alpha, .ptr, .{.ptr=&ret});
+                        _=cop.mul_scalar(sinh(alpha) / alpha, &ret);
                         ret.terms[0] += cosh(alpha);
                         //debug.print("\n\t\texp({}) = cosh(mag) + (sinh(mag)/mag)*self = {} (square is {}, mag {})", .{self, ret, alpha, mag});
                         return ret;
@@ -4273,13 +4589,14 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
                     var term = self.copy(NVec);
 
                     for(1..t) |_| {
-                        var tst = NVec{.terms=@splat(0)};
-                        term = NVec.gp(&term,&cop, &tst).*;
+                        //var tst = NVec{.terms=@splat(0)};
+                        _ = term.gp(&cop, null).add(term, &term);
                     }
 
-                    var tst = NVec{.terms=@splat(0)};
-                    var rhs = term.mul_scalar((1.0/denominator), .stack_alloc, .{.ptr=&tst});
-                    ret = ret.add(&rhs, &tst).*;
+                    //var tst = NVec{.terms=@splat(0)};
+                    var rhs = term.mul_scalar((1.0/denominator), NVec);
+                    //@compileLog(comptimePrint("rhs type name {s}", .{@typeName(@TypeOf(rhs))}));
+                    ret = ret.add(&rhs, NVec);
                 }
                 return ret;
             }
@@ -4391,5 +4708,8 @@ fn Algebra(comptime _p: usize, comptime _n: usize, comptime _z: usize, comptime 
         };
     };
 
+    if(alg.NVec != alg.MVecSubset(std.math.pow(usize, 2, alg.basis_len) - 1)) {
+        @compileError(comptimePrint("AAAAAAAAAAAAAAAAAAA"));
+    }
     return alg;
 }
