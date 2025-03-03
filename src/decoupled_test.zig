@@ -235,6 +235,9 @@ pub fn GAlgebraOp(T: type) type {
                 
                 .GeometricProduct => struct {
                     pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.GeometricProduct) {
+                        //if(@abs(left.value) < 0.00001 or @abs(right.value) < 0.00001) {
+                        //    return BladeTerm{.value = 0, .blade = 0};
+                        //}
                         const zero_mask = sig.zero_mask;
                         const neg_mask = sig.neg_mask;
                         const flip_field = sig.flipped_parities;
@@ -250,6 +253,9 @@ pub fn GAlgebraOp(T: type) type {
                         //const value: isize = -2 * neg_powers_mod_2 + 1;
                         const value: isize = unsigned_to_signed_parity(flips_permuted_neg_parity(neg_mask, flip_field, lhs, rhs));
                         const ret_val = left.value * right.value * @as(f64, @floatFromInt(value));
+                        //if(@abs(left.value) > 0.0001 and @abs(right.value) > 0.0001) {
+                        //    @compileLog(comptimePrint("GeometricProduct.eval(): {d:.1} {b} * {d:.1} {b} = (value {}-> retval {d:.1}){b} with neg_mask {b} and flip_field {b} and zero_mask {b} squares {b}", .{left.value, left.blade, right.value, right.blade, value, ret_val, blade, neg_mask, flip_field, zero_mask, squares}));
+                        //}
                         if(@round(ret_val) != ret_val) {
                             @compileLog(comptimePrint("\n\t\tgp lhs val {} * rhs val {} * parity {} = noninteger val {}", .{left.value, right.value, @as(f64, @floatFromInt(value)), ret_val}));
                         }
@@ -262,6 +268,9 @@ pub fn GAlgebraOp(T: type) type {
                 },
                 .OuterProduct => struct {
                     pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.OuterProduct) {
+                        //if(@abs(left.value) < 0.00001 or @abs(right.value) < 0.00001) {
+                        //    return BladeTerm{.value = 0, .blade = 0};
+                        //}
                         const lhs = left.blade;
                         const rhs = right.blade;
                         const squares = lhs & rhs;
@@ -275,6 +284,9 @@ pub fn GAlgebraOp(T: type) type {
                 },
                 .InnerProduct => struct {
                     pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.InnerProduct) {
+                        //if(@abs(left.value) < 0.00001 or @abs(right.value) < 0.00001) {
+                        //    return BladeTerm{.value = 0, .blade = 0};
+                        //}
                         const neg_mask: usize = sig.neg_mask;
                         const zero_mask = sig.zero_mask;
                         const flip_field = sig.flipped_parities;
@@ -298,6 +310,9 @@ pub fn GAlgebraOp(T: type) type {
 
                 .RegressiveProduct => struct {
                     pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.RegressiveProduct) {
+                        //if(@abs(left.value) < 0.00001 or @abs(right.value) < 0.00001) {
+                        //    return BladeTerm{.value = 0, .blade = 0};
+                        //}
                         const neg_mask = sig.neg_mask;
                         const flip_field = sig.flipped_parities;
                         const pseudoscalar = sig.pseudoscalar;
@@ -323,6 +338,9 @@ pub fn GAlgebraOp(T: type) type {
                 //execution is something like first * first * second * coeff
                 .SandwichProduct => struct {
                     pub fn eval(left: BladeTerm, right: BladeTerm) Codomain(.SandwichProduct) {
+                        //if(@abs(left.value) < 0.00001 or @abs(right.value) < 0.00001) {
+                        //    return BladeTerm{.value = 0, .blade = 0};
+                        //}
                         //const bread = left.blade;
                         //const meat = right.blade;
                         const gp = GAlgebraOp.GeometricProduct.BladeOp();
@@ -940,7 +958,8 @@ pub fn GAlgebraInfo(comptime _dual: bool, comptime _basis: []const u8, comptime 
                         .{ .value = rhs_value, .blade = rhs }
                     );
                     ret[lhs][rhs] = res;
-                    if (res.value == 0 or (1 << lhs) & lhs_subset == 0 or (1 << rhs) & rhs_subset == 0) {
+                    if (res.value == 0 or ((1 << lhs) & lhs_subset) == 0 or ((1 << rhs) & rhs_subset) == 0) {
+                        //@compileLog(comptimePrint("binary_cayley (EARLY RET): {d} {b} in subset {b} * {d} {b} in subset {b} = {d} {b}", .{lhs_value, lhs, lhs_subset, rhs_value, rhs, rhs_subset, res.value, res.blade}));
                         continue;
                     }
                     //@compileLog(comptimePrint("binary_cayley_table(lhs {b}, rhs {b}) = {?}", .{lhs, rhs, res}));
@@ -951,6 +970,7 @@ pub fn GAlgebraInfo(comptime _dual: bool, comptime _basis: []const u8, comptime 
                         .left_blade = lhs, 
                         .right_blade = rhs 
                     };
+                    //@compileLog(comptimePrint("binary_cayley (INVERSE SET term {}): {d} {b} in subset {b} * {d} {b} in subset {b} = {d} {b}", .{inv_indices[res.blade], lhs_value, lhs, lhs_subset, rhs_value, rhs, rhs_subset, res.value, res.blade}));
                     inv_indices[res.blade] += 1;
                 }
             }
@@ -1015,6 +1035,8 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
 
     var _basis_values: [_values.len]BasisVector = undefined;
     var _basis_orders: [_values.len]struct {usize, BasisVector} = undefined;
+    //we need an array of type binary blade -> real idx
+    var _canonical_blade_to_idx: [basis_size]?usize = .{null} ** basis_size;
 
     var _subset: usize = 0;
 
@@ -1051,6 +1073,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
 
     for(0.._values.len) |i| {
         _basis_values[i] = _basis_orders[i].@"1";
+        _canonical_blade_to_idx[_basis_values[i].blade] = i;
     }
 
     //const canonical_basis_with_flips: [basis_size]BasisVector = alg_info.canonical_basis_with_flips;
@@ -1060,6 +1083,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
     const __name: []const u8 = "Multivector";
     const __subset = _subset;
     const __basis_values = _basis_values;
+    const __canonical_blade_to_idx = _canonical_blade_to_idx;
     const ret = struct {
         const Self = @This();
         pub const Algebra = alg_info;
@@ -1068,6 +1092,9 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
         pub const subset = __subset;
 
         pub const basis_values: []const BasisVector = &__basis_values;
+        /// partial function of sig binary blade -> idx in our terms array of that blade.
+        /// null element means we don't contain the ith basis blade.
+        pub const canonical_blade_to_idx: [basis_size]?usize = __canonical_blade_to_idx;
         pub const values_arg: []const usize = _values;
 
         pub const num_terms = count_bits(subset);
@@ -1157,7 +1184,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
         ) !void {
             _ = try writer.print("{s} {{", .{Self.name});
             for(0..num_terms) |i| {
-                _ = try writer.print("{s}: {}", .{Self.basis_values[i].name, mvec.terms[i]});
+                _ = try writer.print("{s}: {d:.3}", .{Self.basis_values[i].name, mvec.terms[i]});
                 if(i < num_terms - 1) {
                     _ = try writer.print(", ", .{});
                 }
@@ -1175,7 +1202,11 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
             };
         }
 
-        pub fn binary_create_scatter_masks_from_cayley_table_inv(comptime inv: [basis_size][basis_size]ProdTerm(T), comptime inv_indices: [basis_size]usize, comptime lhs_subset: usize, comptime rhs_subset: usize, comptime superset: usize, comptime len: usize) BinaryScatterMasksReturn(len) {
+        pub fn binary_create_scatter_masks_from_cayley_table_inv(comptime inv: [basis_size][basis_size]ProdTerm(T), comptime inv_indices: [basis_size]usize, comptime lhs_type: type, comptime rhs_type: type, comptime res_type: type, comptime len: usize) BinaryScatterMasksReturn(len) {
+            const lhs_subset: usize = lhs_type.subset;
+            const rhs_subset: usize = rhs_type.subset;
+            const superset: usize = res_type.subset;
+
             var lhs_masks: [basis_size][len]i32 = .{.{-1} ** len} ** basis_size;
             var rhs_masks: [basis_size][len]i32 = .{.{-1} ** len} ** basis_size;
             var coeff_masks: [basis_size][len]T = .{.{0} ** len} ** basis_size;
@@ -1211,8 +1242,19 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
                     const left_operand_blade = inv_term.left_blade;
                     const right_operand_blade = inv_term.right_blade;
 
-                    const lhs_idx = count_bits(lhs_subset & ((1 << left_operand_blade) -% 1));
-                    const rhs_idx = count_bits(rhs_subset & ((1 << right_operand_blade) -% 1));
+                    const lhs_canon_idx = count_bits(lhs_subset & ((1 << left_operand_blade) -% 1));
+                    const rhs_canon_idx = count_bits(rhs_subset & ((1 << right_operand_blade) -% 1));
+                    const _lhs_idx = lhs_type.canonical_blade_to_idx[left_operand_blade];
+                    const _rhs_idx = rhs_type.canonical_blade_to_idx[right_operand_blade];
+                    if(_lhs_idx == null) {
+                        @compileError(comptimePrint("lhs blade {b} with unordered index {b} not found in subset {b} because its index is null! canonical_blade_to_idx: {any}", .{left_operand_blade, lhs_canon_idx, lhs_subset, lhs_type.canonical_blade_to_idx}));
+                    }
+                    if(_rhs_idx == null) {
+                        @compileError(comptimePrint("rhs blade {b} with unordered index {b} not found in subset {b} because its index is null! canonical_blade_to_idx: {any}, subset & (1 << rhs) = {}", .{right_operand_blade, rhs_canon_idx, rhs_subset, rhs_type.canonical_blade_to_idx, rhs_subset & (1 << right_operand_blade)}));
+                    }
+                    const lhs_idx: usize = _lhs_idx.?;
+                    const rhs_idx: usize = _rhs_idx.?;
+
                     //rhs_subset = 10111, 
                     if(lhs_subset & (1 << left_operand_blade) == 0) {
                         @compileError(comptimePrint("lhs_subset {b} doesnt contain blade {b} that's supposed to be an operand from it! lhs {b} rhs {b} res {b}", .{lhs_subset, left_operand_blade, lhs_subset, rhs_subset, superset}));
@@ -1220,15 +1262,15 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
                     if(rhs_subset & (1 << right_operand_blade) == 0) {
                         @compileError(comptimePrint("rhs_subset {b} doesnt contain blade {b} that's supposed to be an operand from it! lhs {b} rhs {b} res {b}", .{rhs_subset, right_operand_blade, lhs_subset, rhs_subset, superset}));
                     }
-                    comptime {
-                        if(len == 8) {
-                            @compileLog(comptimePrint("create_scatter_masks: rhs_idx: {}, (1 << right_operand_blade: {b}) = {b} -% 1 = {b} & rhs_subset {b} = {b}", .{rhs_idx, right_operand_blade, 1 << right_operand_blade, (1 << right_operand_blade) -% 1, rhs_subset, rhs_subset & ((1 << right_operand_blade) -% 1)}));
-                        }
 
+                    const res_canon_idx = count_bits(superset & ((1 << result_blade) -% 1));
+                    const _res_idx = res_type.canonical_blade_to_idx[result_blade];
+                    if(_res_idx == null) {
+                        @compileError(comptimePrint("res blade {b} with unordered index {b} not found in subset {b} because its index is null! canonical_blade_to_idx: {any}", .{result_blade, res_canon_idx, superset, res_type.canonical_blade_to_idx}));
                     }
-
-                    const res_idx = count_bits(superset & ((1 << result_blade) -% 1));
-                    //@compileLog(comptimePrint("rhs idx {}", .{rhs_idx}));
+                    const res_idx: usize = _res_idx.?;
+                    //@compileLog(comptimePrint("term {}: lhs {b}/{} of {any} * rhs {b}/{} of {any} = {} res {b} {} of {any}", .{ith_term, left_operand_blade, lhs_idx, lhs_type.canonical_blade_to_idx, right_operand_blade, rhs_idx, rhs_type.canonical_blade_to_idx, coeff, result_blade, res_idx, res_type.canonical_blade_to_idx}));
+                    //@compileLog(comptimePrint("flipped parities: {b}", .{lhs_type.Algebra.signature.flipped_parities}));
 
                     lhs_mask[res_idx] = lhs_idx;
                     rhs_mask[res_idx] = rhs_idx;
@@ -1543,7 +1585,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
             const table = comptime Algebra.binary_cayley_table(T, GAlgebraOp(T).GeometricProduct.BladeOp(Algebra.signature), left_set, right_set);
             //tell the table inverter the res size, then we can expect it to return an array with comptime known size
             const res_size = comptime count_bits(res_set);
-            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, left_set, right_set, res_set, res_size);
+            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, LeftInner, RightInner, ResInner, res_size);
 
 
             //@compileLog(comptimePrint("\nleft_set: {b}, right_set: {b}, res_set: {b}, table: {}, res_size: {}, operation: {}", .{left_set, right_set, res_set, table, res_size, operation}));
@@ -1606,7 +1648,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
             const table = comptime Algebra.binary_cayley_table(T, GAlgebraOp(T).OuterProduct.BladeOp(Algebra.signature), left_set, right_set);
             //tell the table inverter the res size, then we can expect it to return an array with comptime known size
             const res_size = comptime count_bits(res_set);
-            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, left_set, right_set, res_set, res_size);
+            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, LeftInner, RightInner, ResInner, res_size);
 
 
             //@compileLog(comptimePrint("\nleft_set: {b}, right_set: {b}, res_set: {b}, table: {}, res_size: {}, operation: {}", .{left_set, right_set, res_set, table, res_size, operation}));
@@ -1669,7 +1711,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
             const table = comptime Algebra.binary_cayley_table(T, GAlgebraOp(T).InnerProduct.BladeOp(Algebra.signature), left_set, right_set);
             //tell the table inverter the res size, then we can expect it to return an array with comptime known size
             const res_size = comptime count_bits(res_set);
-            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, left_set, right_set, res_set, res_size);
+            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, LeftInner, RightInner, ResInner, res_size);
 
 
             //@compileLog(comptimePrint("\nleft_set: {b}, right_set: {b}, res_set: {b}, table: {}, res_size: {}, operation: {}", .{left_set, right_set, res_set, table, res_size, operation}));
@@ -2081,7 +2123,7 @@ pub fn main() !void {
     //const galg = GAlgebraFull(2, .{.{.name = &.{'x'}, .square = .positive}, .{.name = &.{'y'}, .square = .positive}});
     //galg.test_func();
     //debug.print("AAAAAAAA", .{});
-    const ordering: []const u8 = "ixy,xy,s,xi,iy,y,x,i";
+    const ordering: []const u8 = "s,i,x,ix,iy,xy,y,ixy";//"ixy,xy,s,ix,iy,y,x,i";
     const galg = GAlgebraInfo(true, "0i,+x,+y", ordering, &.{});
     const MVecT = MVecSubset(galg, f64, &.{0, 1, 2, 4}); //s,i,x,y
     //@compileLog(comptimePrint("MVecT subset: {b}", .{MVecT.subset}));
@@ -2089,8 +2131,8 @@ pub fn main() !void {
     const mv2: MVecT = MVecT.init_raw(.{3.2, -4.1, 1.2, 7.1});
     //@compileLog(comptimePrint("mv1: {}, mv2: {}", .{mv1, mv2}));
     const mv3 = mv1.gp(mv2, null);
-    debug.print("{} * {} = {}\n", .{mv1, mv2, mv3});
-    const mv4 = mv1.op(mv2, null);
-    debug.print("{} ^ {} = {}", .{mv1, mv2, mv4});
+    debug.print("{} * {} = \n\t{}\n\t ({} * {} = \n\t\t{})\n", .{mv1, mv2, mv3, mv1.terms, mv2.terms, mv3.terms});
+    //const mv4 = mv1.op(mv2, null);
+    //debug.print("{} ^ {} = \n\t{} \n\t({} ^ {} = \n\t\t{})", .{mv1, mv2, mv4, mv1.terms, mv2.terms, mv4.terms});
     //@compileLog(comptimePrint("{} * {} = {}", .{mv1, mv2, mv3}));
 }
