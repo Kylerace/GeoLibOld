@@ -50,6 +50,9 @@ fn unsigned_to_signed_parity(unsigned_parity: anytype) isize {
     return (-2 * @as(isize, unsigned_parity & 1) + 1);
 }
 
+inline fn is_comptime(val: anytype) bool {
+    return @typeInfo(@TypeOf(.{val})).Struct.fields[0].is_comptime;
+}
 
 ///returns the type of either x if its not a pointer or x's pointed type if it is, and whether it is a ptr or not
 pub fn UnwrapPtrType(comptime x: type) struct {type, bool} {
@@ -1433,6 +1436,19 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
             return MVecSubset(_alg_info, T, arg);
         }
 
+        pub fn MatchAlias(comptime ret_subset: usize) type {
+
+            const matching_alias = comptime find_alias_matching_runtime_bitfield(Algebra, ret_subset);
+            if(matching_alias) |alias| {
+                const arg = alias_to_values_arg(alias);
+                return MVecSubset(_alg_info, T, arg);
+            } else {
+                const arg = subset_to_values_arg(ret_subset);
+                //@compileLog(comptimePrint("BinaryRes subset_to_values_arg({b}) = {any}", .{ret_subset, arg}));
+                return MVecSubset(_alg_info, T, arg);
+            }
+        }
+
         /// returns the output type of the given operation given the operand and result types.
         /// if the result type is null or void then the output type is determined by the possible blades created by the operation
         /// given the operands. if the result type is a pointer or a type then the output is forced to be that type
@@ -1485,19 +1501,8 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
             //    }
             //    @compileLog(str[0..c]);
             //}
-            //TODO: THIS IS WHERE THE LOGIC IS WRONG! currently it assumes that 10 * 1 = - 1 * 10 and 11 + - 11 cancels out but that only works if
-            // the coefficients of lhs[1,10] = rhs[1,10]
             const ret_subset: usize = comptime nonzero_subset(table.results_to_terms, table.results_to_num_terms);
-            //@compileLog(comptimePrint("BinaryRes after cayley: values: {any}, left subset: {b}, right subset: {b} ret_subset: {b}", .{_values, left_type.subset, right_type.subset, ret_subset}));
-            const matching_alias = comptime find_alias_matching_runtime_bitfield(Algebra, ret_subset);
-            if(matching_alias) |alias| {
-                const arg = alias_to_values_arg(alias);
-                return MVecSubset(_alg_info, T, arg);
-            } else {
-                const arg = subset_to_values_arg(ret_subset);
-                //@compileLog(comptimePrint("BinaryRes subset_to_values_arg({b}) = {any}", .{ret_subset, arg}));
-                return MVecSubset(_alg_info, T, arg);
-            }
+            return MatchAlias(ret_subset);
             //return MVecSubset(ret_subset);
         }
 
@@ -1545,193 +1550,118 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
             return res;
         }
 
+        /// multiplicative binary operation that produces an inferred multivector type. doesnt work for addition
+        pub fn binary_op(comptime opr: GAlgebraOp(T), left: anytype, right: anytype, res: anytype) BinaryRes(opr, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+            const Result: type = BinaryRes(opr, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
+            var result = get_result(res, Result);
 
+            const Left = @TypeOf(left);
+            const Right = @TypeOf(right);
+
+            const left_info = @typeInfo(Left);
+            const right_info = @typeInfo(Right);   
+            const res_info = @typeInfo(Result);             
+
+            const LeftInner = if(left_info == .Pointer) left_info.Pointer.child else Left;
+            const RightInner = if(right_info == .Pointer) right_info.Pointer.child else Right;
+            const ResInner = if(res_info == .Pointer) res_info.Pointer.child else Result;
+            
+
+            //@compileLog(comptimePrint("gp left: {s}, right: {s},,, left ordering: {any},,, right ordering: {any},,, Result ordering {any}", .{@typeName(LeftInner), @typeName(RightInner), LeftInner.values_arg, RightInner.values_arg, ResInner.values_arg}));
+
+            const left_set: usize = LeftInner.subset;
+            const right_set: usize = RightInner.subset;
+            const res_set: usize = ResInner.subset;
+
+            const table = comptime Algebra.binary_cayley_table(T, opr.BladeOp(Algebra.signature), left_set, right_set);
+            //tell the table inverter the res size, then we can expect it to return an array with comptime known size
+            const res_size = comptime count_bits(res_set);
+            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, LeftInner, RightInner, ResInner, res_size);
+
+
+            //@compileLog(comptimePrint("\nleft_set: {b}, right_set: {b}, res_set: {b}, table: {}, res_size: {}, operation: {}", .{left_set, right_set, res_set, table, res_size, operation}));
+
+            const left_arg = blk: {
+                if(left_info == .Pointer) {
+                    break :blk left;
+                }
+                break :blk &left;
+            };
+
+            const res_to_use = blk: {
+                if(@typeInfo(Result) == .Pointer) {
+                    break :blk result;
+                }
+                break :blk &result;
+            };
+
+            execute_sparse_vector_op(left_arg, right, res_to_use, comptime res_size, comptime operation, T);
+            return result;
+        }
+
+        /// geometric product
         pub fn gp(left: anytype, right: anytype, res: anytype) BinaryRes(.GeometricProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
-            const Result: type = BinaryRes(.GeometricProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
-            var result = get_result(res, Result);
-
-            const Left = @TypeOf(left);
-            const Right = @TypeOf(right);
-
-            const left_info = @typeInfo(Left);
-            const right_info = @typeInfo(Right);   
-            const res_info = @typeInfo(Result);             
-
-            const LeftInner = if(left_info == .Pointer) left_info.Pointer.child else Left;
-            const RightInner = if(right_info == .Pointer) right_info.Pointer.child else Right;
-            const ResInner = if(res_info == .Pointer) res_info.Pointer.child else Result;
-            
-
-            //@compileLog(comptimePrint("gp left: {s}, right: {s},,, left ordering: {any},,, right ordering: {any},,, Result ordering {any}", .{@typeName(LeftInner), @typeName(RightInner), LeftInner.values_arg, RightInner.values_arg, ResInner.values_arg}));
-
-            const left_set: usize = LeftInner.subset;
-            const right_set: usize = RightInner.subset;
-            const res_set: usize = ResInner.subset;
-
-            ///// like BladeMult but the blade is inferred by its index in an array
-            //pub fn KnownVal(T: type) type {
-            //    return struct {
-            //        known: bool,
-            //        val: T
-            //    };
-            //}
-
-            /////null val = runtime known, nonnull = comptime known
-            //const RuntimeOrComptimeBlade = struct {
-            //    blade: usize,
-            //    val: ?f64,
+            return binary_op(GAlgebraOp(T).GeometricProduct, left, right, res);
+            //const Result: type = BinaryRes(.GeometricProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
+            //var result = get_result(res, Result);
+            //
+            //const Left = @TypeOf(left);
+            //const Right = @TypeOf(right);
+            //
+            //const left_info = @typeInfo(Left);
+            //const right_info = @typeInfo(Right);   
+            //const res_info = @typeInfo(Result);             
+            //
+            //const LeftInner = if(left_info == .Pointer) left_info.Pointer.child else Left;
+            //const RightInner = if(right_info == .Pointer) right_info.Pointer.child else Right;
+            //const ResInner = if(res_info == .Pointer) res_info.Pointer.child else Result;
+            //
+            //
+            ////@compileLog(comptimePrint("gp left: {s}, right: {s},,, left ordering: {any},,, right ordering: {any},,, Result ordering {any}", .{@typeName(LeftInner), @typeName(RightInner), LeftInner.values_arg, RightInner.values_arg, ResInner.values_arg}));
+            //
+            //const left_set: usize = LeftInner.subset;
+            //const right_set: usize = RightInner.subset;
+            //const res_set: usize = ResInner.subset;
+            //
+            //const table = comptime Algebra.binary_cayley_table(T, GAlgebraOp(T).GeometricProduct.BladeOp(Algebra.signature), left_set, right_set);
+            ////tell the table inverter the res size, then we can expect it to return an array with comptime known size
+            //const res_size = comptime count_bits(res_set);
+            //const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, LeftInner, RightInner, ResInner, res_size);
+            //
+            //
+            ////@compileLog(comptimePrint("\nleft_set: {b}, right_set: {b}, res_set: {b}, table: {}, res_size: {}, operation: {}", .{left_set, right_set, res_set, table, res_size, operation}));
+            //
+            //const left_arg = blk: {
+            //    if(left_info == .Pointer) {
+            //        break :blk left;
+            //    }
+            //    break :blk &left;
             //};
-
-            const table = comptime Algebra.binary_cayley_table(T, GAlgebraOp(T).GeometricProduct.BladeOp(Algebra.signature), left_set, right_set);
-            //tell the table inverter the res size, then we can expect it to return an array with comptime known size
-            const res_size = comptime count_bits(res_set);
-            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, LeftInner, RightInner, ResInner, res_size);
-
-
-            //@compileLog(comptimePrint("\nleft_set: {b}, right_set: {b}, res_set: {b}, table: {}, res_size: {}, operation: {}", .{left_set, right_set, res_set, table, res_size, operation}));
-
-            const left_arg = blk: {
-                if(left_info == .Pointer) {
-                    break :blk left;
-                }
-                break :blk &left;
-            };
-
-            const res_to_use = blk: {
-                if(@typeInfo(Result) == .Pointer) {
-                    break :blk result;
-                }
-                break :blk &result;
-            };
-
-            execute_sparse_vector_op(left_arg, right, res_to_use, comptime res_size, comptime operation, T);
-            return result;
+            //
+            //const res_to_use = blk: {
+            //    if(@typeInfo(Result) == .Pointer) {
+            //        break :blk result;
+            //    }
+            //    break :blk &result;
+            //};
+            //
+            //execute_sparse_vector_op(left_arg, right, res_to_use, comptime res_size, comptime operation, T);
+            //return result;
         }
 
-
+        /// outer product
         pub fn op(left: anytype, right: anytype, res: anytype) BinaryRes(.OuterProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
-            const Result: type = BinaryRes(.OuterProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
-            var result = get_result(res, Result);
-
-            const Left = @TypeOf(left);
-            const Right = @TypeOf(right);
-
-            const left_info = @typeInfo(Left);
-            const right_info = @typeInfo(Right);   
-            const res_info = @typeInfo(Result);             
-
-            const LeftInner = if(left_info == .Pointer) left_info.Pointer.child else Left;
-            const RightInner = if(right_info == .Pointer) right_info.Pointer.child else Right;
-            const ResInner = if(res_info == .Pointer) res_info.Pointer.child else Result;
-            
-
-            //@compileLog(comptimePrint("gp left: {s}, right: {s},,, left ordering: {any},,, right ordering: {any},,, Result ordering {any}", .{@typeName(LeftInner), @typeName(RightInner), LeftInner.values_arg, RightInner.values_arg, ResInner.values_arg}));
-
-            const left_set: usize = LeftInner.subset;
-            const right_set: usize = RightInner.subset;
-            const res_set: usize = ResInner.subset;
-
-            ///// like BladeMult but the blade is inferred by its index in an array
-            //pub fn KnownVal(T: type) type {
-            //    return struct {
-            //        known: bool,
-            //        val: T
-            //    };
-            //}
-
-            /////null val = runtime known, nonnull = comptime known
-            //const RuntimeOrComptimeBlade = struct {
-            //    blade: usize,
-            //    val: ?f64,
-            //};
-
-            const table = comptime Algebra.binary_cayley_table(T, GAlgebraOp(T).OuterProduct.BladeOp(Algebra.signature), left_set, right_set);
-            //tell the table inverter the res size, then we can expect it to return an array with comptime known size
-            const res_size = comptime count_bits(res_set);
-            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, LeftInner, RightInner, ResInner, res_size);
-
-
-            //@compileLog(comptimePrint("\nleft_set: {b}, right_set: {b}, res_set: {b}, table: {}, res_size: {}, operation: {}", .{left_set, right_set, res_set, table, res_size, operation}));
-
-            const left_arg = blk: {
-                if(left_info == .Pointer) {
-                    break :blk left;
-                }
-                break :blk &left;
-            };
-
-            const res_to_use = blk: {
-                if(@typeInfo(Result) == .Pointer) {
-                    break :blk result;
-                }
-                break :blk &result;
-            };
-
-            execute_sparse_vector_op(left_arg, right, res_to_use, comptime res_size, comptime operation, T);
-            return result;
+            return binary_op(GAlgebraOp(T).OuterProduct, left, right, res);
         }
 
-
+        /// inner product
         pub fn ip(left: anytype, right: anytype, res: anytype) BinaryRes(.InnerProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
-            const Result: type = BinaryRes(.InnerProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
-            var result = get_result(res, Result);
+            return binary_op(GAlgebraOp(T).InnerProduct, left, right, res);
+        }
 
-            const Left = @TypeOf(left);
-            const Right = @TypeOf(right);
-
-            const left_info = @typeInfo(Left);
-            const right_info = @typeInfo(Right);   
-            const res_info = @typeInfo(Result);             
-
-            const LeftInner = if(left_info == .Pointer) left_info.Pointer.child else Left;
-            const RightInner = if(right_info == .Pointer) right_info.Pointer.child else Right;
-            const ResInner = if(res_info == .Pointer) res_info.Pointer.child else Result;
-            
-
-            //@compileLog(comptimePrint("gp left: {s}, right: {s},,, left ordering: {any},,, right ordering: {any},,, Result ordering {any}", .{@typeName(LeftInner), @typeName(RightInner), LeftInner.values_arg, RightInner.values_arg, ResInner.values_arg}));
-
-            const left_set: usize = LeftInner.subset;
-            const right_set: usize = RightInner.subset;
-            const res_set: usize = ResInner.subset;
-
-            ///// like BladeMult but the blade is inferred by its index in an array
-            //pub fn KnownVal(T: type) type {
-            //    return struct {
-            //        known: bool,
-            //        val: T
-            //    };
-            //}
-
-            /////null val = runtime known, nonnull = comptime known
-            //const RuntimeOrComptimeBlade = struct {
-            //    blade: usize,
-            //    val: ?f64,
-            //};
-
-            const table = comptime Algebra.binary_cayley_table(T, GAlgebraOp(T).InnerProduct.BladeOp(Algebra.signature), left_set, right_set);
-            //tell the table inverter the res size, then we can expect it to return an array with comptime known size
-            const res_size = comptime count_bits(res_set);
-            const operation = comptime binary_create_scatter_masks_from_cayley_table_inv(table.results_to_terms, table.results_to_num_terms, LeftInner, RightInner, ResInner, res_size);
-
-
-            //@compileLog(comptimePrint("\nleft_set: {b}, right_set: {b}, res_set: {b}, table: {}, res_size: {}, operation: {}", .{left_set, right_set, res_set, table, res_size, operation}));
-
-            const left_arg = blk: {
-                if(left_info == .Pointer) {
-                    break :blk left;
-                }
-                break :blk &left;
-            };
-
-            const res_to_use = blk: {
-                if(@typeInfo(Result) == .Pointer) {
-                    break :blk result;
-                }
-                break :blk &result;
-            };
-
-            execute_sparse_vector_op(left_arg, right, res_to_use, comptime res_size, comptime operation, T);
-            return result;
+        /// regressive product
+        pub fn rp(left: anytype, right: anytype, res: anytype) BinaryRes(.RegressiveProduct, @TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+            return binary_op(.RegressiveProduct, left, right, res);
         }
 
         pub fn Add(comptime lhs: type, comptime rhs: type, comptime res: type) type {
@@ -1799,13 +1729,24 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
                     //count_bits(0b01011101 & (0b100000 -% 1 = 0b011111) = 0b00011101) = 4
                     //which is correct
                     
-                    //may not exist
-                    const left_idx = count_bits(left_set & ((1 << result_blade) -% 1));
-                    const right_idx = count_bits(right_set & ((1 << result_blade) -% 1));
+                    const _left_idx = left_type.canonical_blade_to_idx[result_blade];
+                    const _right_idx = right_type.canonical_blade_to_idx[result_blade];
+                    if(_left_idx == null) {
+                        @compileError(comptimePrint("add(): lhs blade {b} not found in subset {b} because its index is null! canonical_blade_to_idx: {any}", .{result_blade, left_set, left_type.canonical_blade_to_idx}));
+                    }
+                    if(_right_idx == null) {
+                        @compileError(comptimePrint("add(): rhs blade {b} not found in subset {b} because its index is null! canonical_blade_to_idx: {any}", .{result_blade, right_set, right_type.canonical_blade_to_idx}));
+                    }
+                    const left_idx: usize = _left_idx.?;
+                    const right_idx: usize = _right_idx.?;
 
                     //must exist, and if an operand idx exists this is >= that
                     //assuming res is a superset of lhs.subset_field | rhs.subset_field
-                    const res_idx = count_bits(res_set & ((1 << result_blade) -% 1));
+                    const _res_idx = ResInner.canonical_blade_to_idx[result_blade];
+                    if(_res_idx == null) {
+                        @compileError(comptimePrint("add(): res blade {b} not found in subset {b} because its index is null! canonical_blade_to_idx: {any}", .{result_blade, res_set, ResInner.canonical_blade_to_idx}));
+                    }
+                    const res_idx = _res_idx.?;
 
                     if (left_set & (1 << result_blade) != 0) {
                         _lhs_mask[res_idx] = left_idx;
@@ -1825,27 +1766,6 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
             result.terms = left + right;
 
             return result;
-
-            //inline for (0..ret_type.num_terms) |i| {
-            //    const mvec_idx = comptime blk: {
-            //        break :blk ret_type.mvec_index(i);
-            //    };
-            //    if (lhs_type.has(mvec_idx)) { //this has terrible code generation, it "inlines" by jumping all over the place
-            //        if (rhs_type.has(mvec_idx)) {
-            //            ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx) + rhs.get_redirect(mvec_idx));
-            //        } else {
-            //            ret_ptr.set_redirect(mvec_idx, lhs.get_redirect(mvec_idx));
-            //        }
-            //    } else {
-            //        if (rhs_type.has(mvec_idx)) {
-            //            ret_ptr.set_redirect(mvec_idx, rhs.get_redirect(mvec_idx));
-            //        }
-            //    }
-            //    //check if lhs or rhs have the given field value, and if they do do the add. if they dont then continue
-            //    //we need a way of comparing
-            //    //result.terms[i] = lhs.terms[i] + rhs.terms[i];
-            //}
-            //return ret_ptr;
         }
 
         pub fn sub(lhs: anytype, rhs: anytype, res: anytype) Add(@TypeOf(lhs), @TypeOf(rhs), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) { 
@@ -1880,13 +1800,24 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
                     //count_bits(0b01011101 & (0b100000 -% 1 = 0b011111) = 0b00011101) = 4
                     //which is correct
                     
-                    //may not exist
-                    const left_idx = count_bits(left_set & ((1 << result_blade) -% 1));
-                    const right_idx = count_bits(right_set & ((1 << result_blade) -% 1));
+                    const _left_idx = left_type.canonical_blade_to_idx[result_blade];
+                    const _right_idx = right_type.canonical_blade_to_idx[result_blade];
+                    if(_left_idx == null) {
+                        @compileError(comptimePrint("add(): lhs blade {b} not found in subset {b} because its index is null! canonical_blade_to_idx: {any}", .{result_blade, left_set, left_type.canonical_blade_to_idx}));
+                    }
+                    if(_right_idx == null) {
+                        @compileError(comptimePrint("add(): rhs blade {b} not found in subset {b} because its index is null! canonical_blade_to_idx: {any}", .{result_blade, right_set, right_type.canonical_blade_to_idx}));
+                    }
+                    const left_idx: usize = _left_idx.?;
+                    const right_idx: usize = _right_idx.?;
 
                     //must exist, and if an operand idx exists this is >= that
                     //assuming res is a superset of lhs.subset_field | rhs.subset_field
-                    const res_idx = count_bits(res_set & ((1 << result_blade) -% 1));
+                    const _res_idx = ResInner.canonical_blade_to_idx[result_blade];
+                    if(_res_idx == null) {
+                        @compileError(comptimePrint("add(): res blade {b} not found in subset {b} because its index is null! canonical_blade_to_idx: {any}", .{result_blade, res_set, ResInner.canonical_blade_to_idx}));
+                    }
+                    const res_idx = _res_idx.?;
 
                     if (left_set & (1 << result_blade) != 0) {
                         _lhs_mask[res_idx] = left_idx;
@@ -1903,6 +1834,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
             const left = @shuffle(T, lhs.terms, zero, lhs_mask);
             const right = @shuffle(T, rhs.terms, zero, rhs_mask);
 
+
             result.terms = left - right;
 
             return result;
@@ -1910,7 +1842,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
 
         pub fn mul_scalar(self: anytype, scalar: T, res: anytype) BinaryRes(.GeometricProduct, @TypeOf(self), MVecSubset(1), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
             //@compileLog(comptimePrint("mul_scalar self: {s}, res name: {s}, res type info: {?}", .{@typeName(@TypeOf(self)), @typeName(@TypeOf(res)), @typeInfo(@TypeOf(res))}));
-            const Result = BinaryRes(.GeometricProduct, @TypeOf(self), MVecSubset(1), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
+            const Result = BinaryRes(.GeometricProduct, @TypeOf(self), MVecSubset(alg_info, scalar, &.{0}), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
             //var result = get_result(res, Result);
             var result = blk: {
 
@@ -1945,12 +1877,108 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
                 inline for(0..basis_size) |blade_t| {
                     //const blade_t: ud = @truncate(blade);
                     if(ResInner.subset_field & (1 << blade_t) != 0 and Self.subset_field & (1 << blade_t) != 0) {
-                        const us_idx = comptime count_bits(Self.subset_field & ((1 << blade_t) -% 1));
-                        const res_idx = comptime count_bits(ResInner.subset_field & ((1 << blade_t) -% 1));
+                        const us_idx = Self.canonical_blade_to_idx[blade_t].?;
+                        const res_idx = ResInner.canonical_blade_to_idx[blade_t].?;
                         result.terms[res_idx] = self.terms[us_idx] * scalar;
                     }
                 }
             }
+        }
+
+
+        pub fn MeetRes(left: type, right: type, res: type) type {
+            if(Self.Algebra.alg_options.dual == true) {
+                return BinaryRes(.RegressiveProduct, left, right, res);
+            } else {
+                return BinaryRes(.OuterProduct, left, right, res);
+            }
+        }
+
+        pub fn meet(left: anytype, right: anytype, res: anytype) MeetRes(@TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+            if(comptime Self.Algebra.dual == true) {
+                return Self.rp(left,right,res);
+            } else {
+                return Self.op(left,right,res);
+            }
+        }
+
+        pub fn JoinRes(left: type, right: type, res: type) type {
+            if(Self.Algebra.dual == true) {
+                return BinaryRes(.OuterProduct, left, right, res);
+            } else {
+                return BinaryRes(.RegressiveProduct, left, right, res);
+            }
+        }
+
+        pub fn join(left: anytype, right: anytype, res: anytype) JoinRes(@TypeOf(left), @TypeOf(right), if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+            if(comptime Self.Algebra.dual == true) {
+                return Self.op(left,right,res);
+            } else {
+                return Self.rp(left,right,res);
+            }
+        }
+
+        ///project if grade is comptime known
+        pub fn CompProject(comptime grade: ?usize) type {
+            if(grade == null) {
+                @compileError(comptimePrint("Project requires either a non null result type or a non null grade!"));
+            }
+            const tgrade = grade.?;
+            var res_subset: usize = 0;
+
+            for(0..basis_size) |blade| {
+                if(count_bits(blade) == tgrade) {
+                    res_subset |= (1 << blade);
+                }
+            }
+            return MatchAlias(res_subset);
+        }
+
+        pub fn Project(grade: ?usize, comptime res: type) type {
+            const res_info = @typeInfo(res);
+            //@compileLog(comptimePrint("BinaryRes: res: {s} info: {}", .{@typeName(res), res_info}));
+            if(res_info == .Type) {
+                @compileError(comptimePrint("unguarded type passed into Project()! @TypeOf(type) is lossy so if a user passes in a type you have to pass in that type directly as an argument instead of passing in @TypeOf(that type)", .{}));
+            }
+            if(res_info == .Pointer or res_info == .Struct) {
+                return res;
+            }
+
+            //res is null, so infer the correct type based on what grade is
+            if(is_comptime(grade)) {
+                return CompProject(comptime grade);
+            } else {
+                @compileError(comptimePrint("Project() requires a comptime known grade arg if res is unknown!", .{}));
+            }
+        }
+
+        /// project self onto res / the inferred type with all blades matching grade
+        pub fn project(self: *Self, grade: ?usize, res: anytype) Project(grade, if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res)) {
+            const Result: type = Project(grade, if(@typeInfo(@TypeOf(res)) == .Type) res else @TypeOf(res));
+            const result = get_result(res, Result);
+
+            inline for (0..Self.Algebra.basis_len) |i| {
+                const _res_idx = Result.canonical_blade_to_idx[i];
+                if(_res_idx == null) {
+                    continue;
+                }
+                const res_idx = _res_idx.?;
+
+                const _self_idx = Self.canonical_blade_to_idx[i];
+                if(_self_idx == null) {
+                    continue;
+                }
+                const self_idx = _self_idx.?;
+
+                if(grade) |g| {
+                    if(count_bits(i) == g) {
+                        result.terms[res_idx] = self.terms[self_idx];
+                    }
+                } else {
+                    result.terms[res_idx] = self.terms[self_idx];
+                }
+            }
+            return result;
         }
 
     };
@@ -2027,7 +2055,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
 /// Geometric Algebra logical type, contains only information needed to define a geometric algebra with the given signature
 /// that is unique up to isomorphism, as well as helper procs related to that.
 /// it knows nothing about the properties or names you assert about the basis vectors nor what ordering theyre in
-pub fn GAlgebra(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
+pub fn GAlgebraT(comptime _p: usize, comptime _n: usize, comptime _z: usize) type {
     const _d: usize = _p + _n + _z;
     const _basis_len: usize = std.math.pow(usize, 2, _d);
 
@@ -2123,12 +2151,12 @@ pub fn main() !void {
     //const galg = GAlgebraFull(2, .{.{.name = &.{'x'}, .square = .positive}, .{.name = &.{'y'}, .square = .positive}});
     //galg.test_func();
     //debug.print("AAAAAAAA", .{});
-    const ordering: []const u8 = "s,i,x,ix,iy,xy,y,ixy";//"ixy,xy,s,ix,iy,y,x,i";
-    const galg = GAlgebraInfo(true, "0i,+x,+y", ordering, &.{});
-    const MVecT = MVecSubset(galg, f64, &.{0, 1, 2, 4}); //s,i,x,y
+    const ordering: []const u8 = "s,p,x,y,z,px,py,pz,xy,xz,yz,pxy,pyz,pxz,xyz,pxyz";//"ixy,xy,s,ix,iy,y,x,i";
+    const galg = GAlgebraInfo(true, "+p,-x,-y,-z", ordering, &.{});
+    const MVecT = MVecSubset(galg, f64, &.{0, 1, 2, 4,8}); //s,p,x,y,z
     //@compileLog(comptimePrint("MVecT subset: {b}", .{MVecT.subset}));
-    const mv1: MVecT = MVecT.init_raw(.{1.0, 2.0, 3.0, 4.0});
-    const mv2: MVecT = MVecT.init_raw(.{3.2, -4.1, 1.2, 7.1});
+    const mv1: MVecT = MVecT.init_raw(.{1.0, 2.0, 3.0, 4.0, 5.0});
+    const mv2: MVecT = MVecT.init_raw(.{3.2, -4.1, 1.2, 7.1, -0.5});
     //@compileLog(comptimePrint("mv1: {}, mv2: {}", .{mv1, mv2}));
     const mv3 = mv1.gp(mv2, null);
     debug.print("{} * {} = \n\t{}\n\t ({} * {} = \n\t\t{})\n", .{mv1, mv2, mv3, mv1.terms, mv2.terms, mv3.terms});
