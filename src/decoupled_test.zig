@@ -1037,7 +1037,7 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
     const basis_size: usize = alg_info.signature.basis_size;
 
     var _basis_values: [_values.len]BasisVector = undefined;
-    var _basis_orders: [_values.len]struct {usize, BasisVector} = undefined;
+    //var _basis_orders: [_values.len]struct {usize, BasisVector} = undefined;
     //we need an array of type binary blade -> real idx
     var _canonical_blade_to_idx: [basis_size]?usize = .{null} ** basis_size;
 
@@ -1047,38 +1047,43 @@ pub fn MVecSubset(_alg_info: type, T: type, comptime _values: []const usize) typ
         const blade: usize = _values[i];
 
         const basis: BasisVector = alg_info.canonical_basis_with_flips[blade];
-        for(0..basis_size) |j| {
-            const ordered_blade = alg_info.ordered_basis_blades[j];
-            if(!basis.equals(ordered_blade)) {
-                //@compileLog(comptimePrint("{} != {}", .{basis, ordered_blade}));
-                continue;
-            }
-            _basis_orders[i] = .{j, basis};
-            _basis_values[i] = basis;
-        }
-
+        //for(0..basis_size) |j| {
+        //    const ordered_blade = alg_info.ordered_basis_blades[j];
+        //    if(!basis.equals(ordered_blade)) {
+        //        //@compileLog(comptimePrint("{} != {}", .{basis, ordered_blade}));
+        //        continue;
+        //    }
+        //    _basis_orders[i] = .{j, basis};
+        //    _basis_values[i] = basis;
+        //}
+        _basis_values[i] = basis;
         //_basis_values = _basis_values ++ .{basis};
         _subset |= (1 << blade);
     }
 
+    //@compileLog(comptimePrint("1: _values: {any}, _basis_values: {any}", .{_values, _basis_values}));
+
     //insertion sort
-    for(1.._values.len) |i| {
-        //@compileLog(comptimePrint("_basis_orders: {s}, alg_info.ordered_basis_blades: {s}", .{_basis_orders, alg_info.ordered_basis_blades}));
-        const elem: struct {usize, BasisVector} = _basis_orders[i];
-        const key: usize = elem.@"0";
-        var j: isize = i-1;
-        while(j >= 0 and _basis_orders[j].@"0" > key) {
-            _basis_orders[j + 1] = _basis_orders[j];
-            j -= 1;
-        }
-        _basis_orders[j + 1] = elem;
-    }
+    //for(1.._values.len) |i| {
+    //    //@compileLog(comptimePrint("_basis_orders: {s}, alg_info.ordered_basis_blades: {s}", .{_basis_orders, alg_info.ordered_basis_blades}));
+    //    const elem: struct {usize, BasisVector} = _basis_orders[i];
+    //    const key: usize = elem.@"0";
+    //    var j: isize = i-1;
+    //    while(j >= 0 and _basis_orders[j].@"0" > key) {
+    //        _basis_orders[j + 1] = _basis_orders[j];
+    //        j -= 1;
+    //    }
+    //    _basis_orders[j + 1] = elem;
+    //}
+
+    //@compileLog(comptimePrint("2: _values: {any}, _basis_orders: {any}, _basis_values: {any}", .{_values, _basis_orders, _basis_values}));
 
     for(0.._values.len) |i| {
-        _basis_values[i] = _basis_orders[i].@"1";
+        //_basis_values[i] = _basis_orders[i].@"1";
         _canonical_blade_to_idx[_basis_values[i].blade] = i;
     }
 
+    //@compileLog(comptimePrint("3: _values: {any}, _basis_values: {any}", .{_values, _basis_values}));
     //const canonical_basis_with_flips: [basis_size]BasisVector = alg_info.canonical_basis_with_flips;
 
     
@@ -2153,7 +2158,7 @@ pub fn main() !void {
     //debug.print("AAAAAAAA", .{});
     const ordering: []const u8 = "s,p,x,y,z,px,py,pz,xy,xz,yz,pxy,pyz,pxz,xyz,pxyz";//"ixy,xy,s,ix,iy,y,x,i";
     const galg = GAlgebraInfo(true, "+p,-x,-y,-z", ordering, &.{});
-    const MVecT = MVecSubset(galg, f64, &.{0, 1, 2, 4,8}); //s,p,x,y,z
+    const MVecT = MVecSubset(galg, f64, &.{0, 1, 8, 4, 2}); //s,p,x,y,z
     //@compileLog(comptimePrint("MVecT subset: {b}", .{MVecT.subset}));
     const mv1: MVecT = MVecT.init_raw(.{1.0, 2.0, 3.0, 4.0, 5.0});
     const mv2: MVecT = MVecT.init_raw(.{3.2, -4.1, 1.2, 7.1, -0.5});
