@@ -1,0 +1,2 @@
+
+The old version of (GeoLib)[https://github.com/Kylerace/GeoLib]. Main current difference is that it doesn't allow for reordering multivector elements and more behavior is coupled to the multivector type.

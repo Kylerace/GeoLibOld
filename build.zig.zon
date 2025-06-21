@@ -60,9 +60,6 @@
             //.url = "git+https://github.com/castholm/zigglgen#33ee1647f577e057ca05dac568101a0f42e590a1",
             //.hash = "1220c68f8d7e4d24baaa40da9e91b7e480b5ef41489ee147fe535de4d54195ae5c62",
         },
-        .mecha = .{
-            .path = "mecha",
-        }
     },
 
     // Specifies the set of files and directories that are included in this package.
