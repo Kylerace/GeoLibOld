@@ -450,12 +450,13 @@ pub fn main() !void {
     const alg = Algebra(d, 0, 1, f64, .{.dual = true});
     const Plane = alg.KVector(1);
 
-    var mv1: Plane = comptime Plane.init_zero();
+    var mv1: Plane = Plane.init_zero();
     _=(&mv1).set_all(&.{.{.e0, 2.1}, .{.e1, 1.2}, .{.e2, 3.6}});
-    var mv2: Plane = comptime Plane.init_zero();
+    var mv2: Plane = Plane.init_zero();
     _=(&mv2).set_all(&.{.{.e0, 0.4}, .{.e1, -1.6}, .{.e2, 4.8}});
     const mv3 = mv1.gp(mv2, null);
-    _=mv3;
+    //_=mv3;
+    debug.print("\n{} * {} = {}", .{mv1, mv2, mv3});
     //@compileLog(comptimePrint("{} * {} = {}", .{mv1, mv2, mv3}));
 }
 
